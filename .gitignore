@@ -1,0 +1,28 @@
+# Generated local config and deploy output
+config.js
+deploy-*/
+/deploy/
+
+# Backups and local junk
+backups/
+exports/
+*.bak
+*.bak*
+*.orig
+.DS_Store
+Thumbs.db
+
+# Dependencies and tooling
+node_modules/
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+
+# Exported family data — never commit
+test/private/
+*.ged
+*backup*.json
+payloadJson*.json
+changeLog*.json
+osr-real-deploy/

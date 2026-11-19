@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Page not found — Family Tree</title>
+  <script src="/config.js"></script>
+  <script>if (window.OSR_CONFIG && window.OSR_CONFIG.siteTitle) { document.title = "Page not found — " + window.OSR_CONFIG.siteTitle; }</script>
+  <link rel="stylesheet" href="/app.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,500;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet" />
+  <style>
+    body { background-color: #FAF9F6; color: #1E293B; -webkit-font-smoothing: antialiased; }
+  </style>
+</head>
+<body class="font-sans min-h-screen flex items-center justify-center p-6">
+  <main class="w-full max-w-md bg-white border border-parchment-300 rounded-2xl p-6 shadow-2xs space-y-4 text-center">
+    <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500" data-site-title>Family Tree</p>
+    <h1 class="font-serif text-2xl font-semibold text-slate-900">This page was not found</h1>
+    <p class="text-sm text-slate-600 leading-relaxed">The address may be old. The family tree lives at the home page, and the admin panel is at <span class="font-mono text-xs">genealogy-admin.html</span>.</p>
+    <div class="flex flex-wrap items-center justify-center gap-2 pt-1">
+      <a href="/" class="px-4 py-2 rounded-xl bg-archival-indigo hover:bg-archival-indigoHover text-white text-xs font-semibold">Home</a>
+      <a href="/genealogy-admin.html" class="px-4 py-2 rounded-xl bg-white hover:bg-parchment-50 border border-parchment-300 text-xs font-semibold text-slate-800">Admin</a>
+    </div>
+  </main>
+<script>document.querySelectorAll("[data-site-title]").forEach(function(el){ if (window.OSR_CONFIG && window.OSR_CONFIG.siteTitle) el.textContent = window.OSR_CONFIG.siteTitle; });</script>
+</body>
+</html>

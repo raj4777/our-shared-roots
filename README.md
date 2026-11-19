@@ -1,0 +1,156 @@
+# Our Shared Roots
+
+A family-tree web app you host yourself on Firebase. Relatives sign in with Google. The Super Admin decides who may view or edit the tree. The default display name is **Family Tree**; you choose your own title when you run setup.
+
+This repository is a generic, publishable starter. It ships no family data and no Firebase project credentials. A setup script writes a self-contained deploy folder that you upload with the Firebase CLI.
+
+## What you get
+
+- An interactive tree canvas and an outline view
+- An admin panel for people, access lists, the change log, and GEDCOM import/export
+- Google sign-in
+- Firestore security rules that reserve create/delete and access-list changes for the Super Admin
+- A compact change log with revert, plus a one-time move page if an older archive still stores history inside the tree document
+- A small progressive web app (manifest, icons, service worker). The service worker uses network-first for HTML and does not cache Auth or Firestore
+
+## Requirements
+
+- A Google account
+- [Node.js](https://nodejs.org/) (for the setup script)
+- The [Firebase CLI](https://firebase.google.com/docs/cli): `npm install -g firebase-tools`
+
+## 1. Create a Firebase project
+
+1. Open the [Firebase console](https://console.firebase.google.com/) and create a project (or use an existing one). Note the **project ID**.
+2. Do not add Google Analytics unless you want it. It is optional.
+
+## 2. Enable Google sign-in
+
+The app uses **Google** authentication only.
+
+1. In the console: **Build → Authentication → Get started**.
+2. Open the **Sign-in method** tab, enable **Google**, set a support email, and save.
+3. Under **Settings → Authorized domains**, keep `localhost` for testing and add your Hosting domain after the first deploy (Firebase usually adds `PROJECT_ID.web.app` and `PROJECT_ID.firebaseapp.com` for you).
+
+## 3. Create a Cloud Firestore database
+
+1. **Build → Firestore Database → Create database**.
+2. Start in **production** mode (the app ships its own rules; do not leave the database open).
+3. Choose a location and remember it. Common choices are `nam5` (United States, multi-region) and `asia-south2`. This cannot be changed later.
+4. Create the default database.
+
+A Blaze (pay-as-you-go) plan is required if you later want official Firestore backups; the Spark plan is enough to run the app within free limits.
+
+## 4. Register a web app and copy the config
+
+1. Project **settings** (the gear) → **Your apps** → **Add app** → **Web** (`</>`).
+2. Nickname it as you like. You can tick Firebase Hosting, or set Hosting up in the next step.
+3. Copy the `firebaseConfig` object. It looks like this:
+
+```js
+{
+  apiKey: "...",
+  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_PROJECT_ID.firebasestorage.app",
+  messagingSenderId: "...",
+  appId: "..."
+}
+```
+
+Save it as a JSON file, for example `firebase-web-config.json` (use quoted keys). Do not commit this file.
+
+## 5. Run setup
+
+From this repository:
+
+```bash
+# macOS / Linux
+./setup.sh --project-id YOUR_PROJECT_ID \
+  --super-admin you@example.com \
+  --firebase-config ./firebase-web-config.json \
+  --site-title "Family Tree" \
+  --location nam5 \
+  --archive-id familytree
+
+# Windows PowerShell
+.\setup.ps1 --project-id YOUR_PROJECT_ID `
+  --super-admin you@example.com `
+  --firebase-config .\firebase-web-config.json `
+  --site-title "Family Tree" `
+  --location nam5 `
+  --archive-id familytree
+```
+
+You can also run `node setup.mjs` with the same flags, or run the script with no flags and answer the prompts.
+
+What the flags mean:
+
+| Flag | Meaning | Default |
+| --- | --- | --- |
+| `--project-id` | Firebase project ID | (required) |
+| `--super-admin` | Google account that owns the archive | (required) |
+| `--firebase-config` | Path to the web config JSON, or `-` for stdin | (required unless you pass the individual fields) |
+| `--site-title` | Name shown in the header and browser | `Family Tree` |
+| `--location` | Firestore location written into `firebase.json` | `nam5` |
+| `--archive-id` | Document ID under `archives/` | `familytree` |
+| `--archive-log-id` | Change-log document ID | `<archive-id>_log` |
+| `--out` | Output folder | `./deploy-<project-id>` |
+| `--force` | Overwrite an existing output folder | off |
+
+The script refuses to overwrite an existing output folder unless you pass `--force` or confirm at the prompt. The output folder is gitignored.
+
+It writes:
+
+```
+deploy-YOUR_PROJECT_ID/
+  public/                 site files, including public/config.js
+  firestore.rules         rules with your Super Admin email and document IDs
+  firestore.indexes.json
+  firebase.json           Hosting headers, rewrites, and the Firestore location
+  .firebaserc             your project ID
+  README.md
+```
+
+`public/config.js` defines `window.OSR_CONFIG` (Firebase web config, Super Admin email, site title, archive IDs). The pages load it before the app starts.
+
+## 6. Deploy
+
+```bash
+firebase login
+cd deploy-YOUR_PROJECT_ID
+firebase deploy
+```
+
+This deploys **Hosting** and **Firestore rules**. After the first deploy, the site is typically at `https://YOUR_PROJECT_ID.web.app/`.
+
+Rewrites keep older paths working: `/genealogy-studio.html` and `/family-tree.html` serve the tree; `/genealogy-admin.html` and `/admin` serve the admin panel.
+
+## 7. First sign-in as Super Admin
+
+1. Open the site and sign in with the **same Google account** you passed as `--super-admin`.
+2. That first visit creates the two archive documents. Anyone else who signs in before that will be denied until the archive exists.
+3. Open **Admin** (the quiet Admin control in the header). On **People & access**, add relatives by email and grant **View** or **Edit**. Only the Super Admin can change who may sign in.
+4. In-app **Admin** and **Edit** roles can update the tree (Edit) or use the admin panel (Admin). They cannot replace the Super Admin or rewrite the access lists.
+
+## Local preview (optional)
+
+After setup, you can preview without deploying:
+
+```bash
+npx --yes serve deploy-YOUR_PROJECT_ID/public
+```
+
+Sign-in will only work if `localhost` is in the project's authorized domains. The app talks to your real Firebase project, not a mock.
+
+## Configuration file
+
+If you want to run the `src/` files directly, copy `config.example.js` to `config.js` at the site root and fill it in. A filled `config.js` is gitignored and should never be committed.
+
+## Firestore rules tests
+
+See `rules-test/README.md`. The suite uses only synthetic people and the rules template (or a generated `firestore.rules` file).
+
+## License
+
+MIT. See [LICENSE](LICENSE).

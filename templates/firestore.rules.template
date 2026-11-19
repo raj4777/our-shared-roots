@@ -1,0 +1,180 @@
+rules_version = '2';
+
+// Family tree: Firestore Security Rules
+// -------------------------------------
+// The pages use TWO documents (IDs are filled in by setup):
+//   archives/__ARCHIVE_ID__     — the family tree (title, revision, access lists,
+//                                 payloadJson without the change log)
+//   archives/__ARCHIVE_LOG_ID__ — the change log (changeLogJson: { changeEvents,
+//                                 changeSequence }, plus updatedAt / updatedBy*)
+// Both are written together in one transaction (or a writeBatch fallback).
+// Access lists live only on the main document; log-doc rules look them up there.
+//
+// Roles enforced here:
+//   Super Admin : __SUPER_ADMIN_EMAIL__. Full access, including
+//                 create, delete, and changing who is Super Admin.
+//   Editors     : emails in editorEmails (in-app "admin" and "edit" roles). Can
+//                 read and update the tree and the change log. They cannot
+//                 remove or replace the Super Admin, create or delete the
+//                 archive, delete the log, impersonate another user, or change
+//                 authorizedEmails, editorEmails, or superAdminEmail.
+//   Viewers     : emails in authorizedEmails only. Read-only.
+//   Everyone else (including signed-out users) is denied.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function superAdminEmail() {
+      return '__SUPER_ADMIN_EMAIL__';
+    }
+
+    // Token email, lowercased. Callers must first check hasEmail().
+    function hasEmail() {
+      return request.auth != null && request.auth.token.email is string;
+    }
+
+    function myEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    // Editors and viewers must have a verified email. The hardcoded Super Admin
+    // is allowed with a matching token email even if email_verified is missing,
+    // so a Google account glitch cannot lock the owner out.
+    function signedIn() {
+      return hasEmail() && request.auth.token.email_verified == true;
+    }
+
+    function isSuperAdmin() {
+      return hasEmail() && myEmail() == superAdminEmail();
+    }
+
+    function isEditorOf(data) {
+      return signedIn() && data.editorEmails is list && myEmail() in data.editorEmails;
+    }
+
+    function isViewerOf(data) {
+      return signedIn() && data.authorizedEmails is list && myEmail() in data.authorizedEmails;
+    }
+
+    function archivePath() {
+      return /databases/$(database)/documents/archives/__ARCHIVE_ID__;
+    }
+
+    // Prefer getAfter/existsAfter so a transaction that also updates the main
+    // archive is evaluated against the after-state, not a mid-transaction get().
+    function canReadArchive() {
+      return isSuperAdmin()
+        || (existsAfter(archivePath()) && (isEditorOf(getAfter(archivePath()).data) || isViewerOf(getAfter(archivePath()).data)))
+        || (!existsAfter(archivePath()) && exists(archivePath()) && (isEditorOf(get(archivePath()).data) || isViewerOf(get(archivePath()).data)));
+    }
+
+    function canEditArchive() {
+      return isSuperAdmin()
+        || (existsAfter(archivePath()) && isEditorOf(getAfter(archivePath()).data))
+        || (!existsAfter(archivePath()) && exists(archivePath()) && isEditorOf(get(archivePath()).data));
+    }
+
+    // Required fields and types for the tree document.
+    function validArchive(d) {
+      return d.keys().hasAll(['title', 'revision', 'superAdminEmail', 'authorizedEmails',
+                              'editorEmails', 'updatedAt', 'updatedByEmail', 'updatedByUid',
+                              'payloadJson'])
+        && d.payloadJson is string
+        && d.payloadJson.size() <= 1048000
+        && d.authorizedEmails is list && d.authorizedEmails.size() <= 1000
+        && d.editorEmails is list && d.editorEmails.size() <= 1000
+        && d.superAdminEmail is string
+        && d.updatedAt is string
+        && d.title is string && d.title.size() <= 500;
+    }
+
+    // On update, existing unexpected fields may remain (merge writes), but editors
+    // cannot introduce new unknown keys. hasOnly(request.resource.data) would reject
+    // a live document that already has an extra field.
+    function archiveUpdateKeysAllowed() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasOnly(['title', 'revision', 'superAdminEmail', 'authorizedEmails',
+                  'editorEmails', 'updatedAt', 'updatedByEmail', 'updatedByUid',
+                  'payloadJson']);
+    }
+
+    function validLog(d) {
+      return d.keys().hasOnly(['changeLogJson', 'updatedAt', 'updatedByEmail', 'updatedByUid'])
+        && d.changeLogJson is string
+        && d.changeLogJson.size() <= 1048000
+        && d.updatedAt is string
+        && d.updatedByEmail is string
+        && d.updatedByUid is string;
+    }
+
+    // The writer stamps their own identity and cannot pose as someone else.
+    function stampedByMe(d) {
+      return d.updatedByUid == request.auth.uid
+        && d.updatedByEmail is string
+        && d.updatedByEmail.lower() == myEmail();
+    }
+
+    // The Super Admin stays the Super Admin and keeps access.
+    function keepsSuperAdmin(d) {
+      return d.superAdminEmail.lower() == superAdminEmail()
+        && superAdminEmail() in d.authorizedEmails
+        && superAdminEmail() in d.editorEmails;
+    }
+
+    match /archives/__ARCHIVE_ID__ {
+      // Reads: get (getDoc), and onSnapshot/transaction reads of this one doc.
+      // When the doc does not exist yet, only the Super Admin may look (so the
+      // page can create it); everyone else is denied.
+      allow get: if isSuperAdmin()
+        || (resource != null && (isEditorOf(resource.data) || isViewerOf(resource.data)));
+      allow list: if false;
+
+      // First-time setup: only the Super Admin can create the archive.
+      allow create: if isSuperAdmin()
+        && validArchive(request.resource.data)
+        && request.resource.data.keys().hasOnly(['title', 'revision', 'superAdminEmail', 'authorizedEmails',
+                                                 'editorEmails', 'updatedAt', 'updatedByEmail', 'updatedByUid',
+                                                 'payloadJson'])
+        && keepsSuperAdmin(request.resource.data);
+
+      // Saves. Editors may change tree data. Only the Super Admin may change
+      // who has access (authorizedEmails, editorEmails, superAdminEmail).
+      // Editors must send those three fields back unchanged (same values and
+      // list order) or the write is refused.
+      allow update: if isSuperAdmin()
+        || (isEditorOf(resource.data)
+            && validArchive(request.resource.data)
+            && archiveUpdateKeysAllowed()
+            && stampedByMe(request.resource.data)
+            && keepsSuperAdmin(request.resource.data)
+            && request.resource.data.superAdminEmail == resource.data.superAdminEmail
+            && request.resource.data.authorizedEmails == resource.data.authorizedEmails
+            && request.resource.data.editorEmails == resource.data.editorEmails
+           );
+
+      allow delete: if isSuperAdmin();
+    }
+
+    match /archives/__ARCHIVE_LOG_ID__ {
+      // Anyone who can read the tree can read the log, including a missing log
+      // document so the pages can detect "not created yet".
+      allow get: if canReadArchive();
+      allow list: if false;
+
+      // Super Admin or an editor of the existing archive may create or update
+      // the log. Editors cannot delete it.
+      allow create: if isSuperAdmin()
+        || (canEditArchive() && validLog(request.resource.data) && stampedByMe(request.resource.data));
+
+      allow update: if isSuperAdmin()
+        || (canEditArchive() && validLog(request.resource.data) && stampedByMe(request.resource.data));
+
+      allow delete: if isSuperAdmin();
+    }
+
+    // Nothing else in the database is used by the app.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

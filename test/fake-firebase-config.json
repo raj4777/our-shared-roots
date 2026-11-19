@@ -1,0 +1,8 @@
+{
+  "apiKey": "test-api-key-not-real",
+  "authDomain": "demo-family-tree.firebaseapp.com",
+  "projectId": "demo-family-tree",
+  "storageBucket": "demo-family-tree.firebasestorage.app",
+  "messagingSenderId": "123456789012",
+  "appId": "1:123456789012:web:abcdef0123456789"
+}
