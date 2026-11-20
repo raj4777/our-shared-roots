@@ -37,6 +37,29 @@ function run(cmd, args, opts = {}) {
   assert(r.code !== 0 && /project id/i.test(r.stderr), 'rejects an invalid project ID');
 }
 
+// --- build ---
+{
+  const build = await run('npm', ['run', 'build']);
+  assert(build.code === 0, 'npm run build succeeds: ' + (build.stderr || build.stdout).slice(-300));
+  assert(fs.existsSync(path.join(ROOT, 'dist/index.html')), 'writes dist/index.html');
+  assert(fs.existsSync(path.join(ROOT, 'dist/theme-boot.js')), 'copies theme-boot.js into dist');
+  const assets = fs.existsSync(path.join(ROOT, 'dist/assets')) ? fs.readdirSync(path.join(ROOT, 'dist/assets')) : [];
+  assert(assets.some((f) => /^app\.[A-Za-z0-9_-]+\.css$/.test(f)), 'emits hashed app.[hash].css');
+  assert(assets.some((f) => f.endsWith('.js')), 'emits hashed JavaScript modules');
+  for (const name of ['index.html', 'admin.html', 'migrate-log.html', 'offline.html', '404.html']) {
+    const html = fs.readFileSync(path.join(ROOT, 'dist', name), 'utf8');
+    assert(!/<script(?![^>]*src=)/.test(html), name + ' has no inline script (CSP-safe)');
+    assert(html.includes('/theme-boot.js') && html.includes('/config.js') && html.includes('/config-boot.js'), name + ' loads config and theme boot scripts');
+  }
+  const treeHtml = fs.readFileSync(path.join(ROOT, 'dist/index.html'), 'utf8');
+  const adminHtml = fs.readFileSync(path.join(ROOT, 'dist/admin.html'), 'utf8');
+  assert(treeHtml.includes('id="btn-theme-toggle"') && adminHtml.includes('id="btn-theme-toggle"'), 'tree and admin headers have the theme toggle');
+  const sw = fs.readFileSync(path.join(ROOT, 'dist/sw.js'), 'utf8');
+  assert(sw.includes("CACHE_VERSION = 'osr-pwa-v5'"), 'service worker cache is osr-pwa-v5');
+  assert(/\/assets\/app\.[A-Za-z0-9_-]+\.css/.test(sw), 'service worker precaches hashed CSS');
+  assert(sw.includes('/theme-boot.js') && sw.includes('/404.html') && sw.includes('/'), 'service worker precaches boot, 404, and /');
+}
+
 // --- generate ---
 if (fs.existsSync(OUT)) fs.rmSync(OUT, { recursive: true, force: true });
 const gen = await run('node', [
@@ -50,14 +73,14 @@ const gen = await run('node', [
   '--out', OUT
 ]);
 assert(gen.code === 0, 'setup succeeds non-interactively: ' + (gen.stderr || gen.stdout).slice(0, 200));
-assert(fs.existsSync(path.join(OUT, 'public/config.js')), 'writes public/config.js');
+assert(fs.existsSync(path.join(OUT, 'dist/config.js')), 'writes dist/config.js');
 assert(fs.existsSync(path.join(OUT, 'firestore.rules')), 'writes firestore.rules');
 assert(fs.existsSync(path.join(OUT, 'firebase.json')), 'writes firebase.json');
 assert(fs.existsSync(path.join(OUT, '.firebaserc')), 'writes .firebaserc');
-assert(fs.existsSync(path.join(OUT, 'public/index.html')), 'copies the tree page');
-assert(fs.existsSync(path.join(OUT, 'public/admin.html')), 'copies the admin page');
+assert(fs.existsSync(path.join(OUT, 'dist/index.html')), 'copies the built tree page');
+assert(fs.existsSync(path.join(OUT, 'dist/admin.html')), 'copies the built admin page');
 
-const cfgJs = fs.readFileSync(path.join(OUT, 'public/config.js'), 'utf8');
+const cfgJs = fs.readFileSync(path.join(OUT, 'dist/config.js'), 'utf8');
 assert(cfgJs.includes('owner@example.com') && cfgJs.includes('Harbor Family') && cfgJs.includes('familytree'), 'config.js contains the provided values');
 const banned = [('raje'+'ndra'), ('gole'+'gaonkar'), ('our'+'shared'+'roots')];
 assert(!banned.some((w) => cfgJs.toLowerCase().includes(w)), 'generated config.js has no personal production values');
@@ -69,11 +92,18 @@ assert(!rules.includes('__SUPER_ADMIN_EMAIL__') && !rules.includes('__ARCHIVE_ID
 
 const fb = JSON.parse(fs.readFileSync(path.join(OUT, 'firebase.json'), 'utf8'));
 assert(fb.firestore.location === 'nam5', 'firebase.json uses the chosen location');
+assert(fb.hosting && fb.hosting.public === 'dist', 'firebase.json hosting public is dist');
 assert(fb.hosting && Array.isArray(fb.hosting.rewrites), 'firebase.json keeps hosting rewrites');
+const csp = ((fb.hosting.headers || []).find((h) => h.source === '**')?.headers || []).find((h) => h.key === 'Content-Security-Policy');
+const scriptSrc = ((csp && csp.value) || '').split('style-src')[0];
+assert(csp && !scriptSrc.includes("'unsafe-inline'"), 'script-src does not allow unsafe-inline');
+assert(/style-src 'self' 'unsafe-inline'/.test((csp && csp.value) || ''), 'style-src still allows unsafe-inline');
+assert((fb.hosting.headers || []).some((h) => h.source === '/assets/**' && JSON.stringify(h).includes('31536000')), 'hashed /assets/** are cached immutably');
+
 const rc = JSON.parse(fs.readFileSync(path.join(OUT, '.firebaserc'), 'utf8'));
 assert(rc.projects.default === 'demo-family-tree', '.firebaserc has the project ID');
 
-const manifest = JSON.parse(fs.readFileSync(path.join(OUT, 'public/manifest.webmanifest'), 'utf8'));
+const manifest = JSON.parse(fs.readFileSync(path.join(OUT, 'dist/manifest.webmanifest'), 'utf8'));
 assert(manifest.name === 'Harbor Family', 'manifest name is the site title');
 
 // --- refuse overwrite without --force ---
@@ -83,10 +113,11 @@ assert(manifest.name === 'Harbor Family', 'manifest name is the site title');
 }
 
 // --- serve and load pages ---
-const PUBLIC = path.join(OUT, 'public');
+const PUBLIC = path.join(OUT, 'dist');
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json',
   '.webmanifest': 'application/manifest+json',
@@ -137,12 +168,15 @@ const tree = await loadPage('/index.html', () => ({
   siteTitle: window.OSR_CONFIG && window.OSR_CONFIG.siteTitle,
   superAdmin: window.OSR_CONFIG && window.OSR_CONFIG.superAdminEmail,
   archiveId: window.OSR_CONFIG && window.OSR_CONFIG.archiveId,
-  firebaseKey: window.FIREBASE_CONFIG && window.FIREBASE_CONFIG.apiKey
+  firebaseKey: window.FIREBASE_CONFIG && window.FIREBASE_CONFIG.apiKey,
+  hasThemeToggle: !!document.getElementById('btn-theme-toggle'),
+  dataTheme: document.documentElement.getAttribute('data-theme')
 }));
 assert(tree.info.hasConfig && tree.info.siteTitle === 'Harbor Family', 'tree page loads OSR_CONFIG');
 assert(tree.info.superAdmin === 'owner@example.com' && tree.info.archiveId === 'familytree', 'tree page sees Super Admin and archive id');
 assert(tree.info.firebaseKey === 'test-api-key-not-real', 'tree page applies FIREBASE_CONFIG from OSR_CONFIG');
 assert(tree.info.header === 'Harbor Family' || tree.info.title.includes('Harbor Family'), 'tree page shows the site title');
+assert(tree.info.hasThemeToggle, 'tree page has the theme toggle in the header');
 assert(tree.unexpected.length === 0, 'tree page has no unexpected console errors: ' + tree.unexpected.slice(0, 3).join(' | '));
 
 const admin = await loadPage('/admin.html', () => ({

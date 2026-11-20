@@ -1,8 +1,13 @@
 /* Family tree service worker.
-   Network-first for HTML. Never caches Firebase Auth or Firestore. */
-const CACHE_VERSION = 'osr-pwa-v1';
+   Network-first for HTML navigations, then cached index.html, then offline.html.
+   Never caches Firebase Auth, Firestore, Hosting reserved /__/ paths, or Storage photo URLs (including tokenised download URLs). */
+const CACHE_VERSION = 'osr-pwa-v4';
 const PRECACHE_URLS = [
+  '/',
+  '/index.html',
+  '/offline.html',
   '/app.css',
+  '/theme-boot.js',
   '/manifest.webmanifest',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
@@ -18,14 +23,18 @@ const AUTH_OR_DATA_HOSTS = [
   'securetoken.googleapis.com',
   'www.googleapis.com',
   'apis.google.com',
-  'accounts.google.com'
+  'accounts.google.com',
+  'firebasestorage.googleapis.com'
 ];
 
 function isAuthOrDataUrl(url) {
   const host = url.hostname;
   if (AUTH_OR_DATA_HOSTS.some((h) => host === h || host.endsWith('.' + h))) return true;
   if (host.endsWith('.firebaseio.com') || host.endsWith('.firebasestorage.app') || host.endsWith('.firebaseapp.com')) return true;
+  if (host.endsWith('.googleapis.com')) return true;
   if (url.protocol === 'ws:' || url.protocol === 'wss:') return true;
+  if (url.pathname === '/__/' || url.pathname.startsWith('/__/')) return true;
+  if ((host.includes('firebasestorage') || host.endsWith('.googleapis.com')) && (url.searchParams.has('token') || /[?&]token=/.test(url.search))) return true;
   return false;
 }
 
@@ -37,7 +46,15 @@ function isHtmlRequest(request, url) {
   return accept.includes('text/html') && request.destination !== 'style' && request.destination !== 'script' && request.destination !== 'image';
 }
 
-async function networkFirst(request) {
+async function cachedIndexOrOffline(cache) {
+  const index = await cache.match('/index.html') || await cache.match('/');
+  if (index) return index;
+  const offline = await cache.match('/offline.html');
+  if (offline) return offline;
+  return null;
+}
+
+async function networkFirstNavigation(request) {
   const cache = await caches.open(CACHE_VERSION);
   try {
     const fresh = await fetch(request);
@@ -46,8 +63,10 @@ async function networkFirst(request) {
     }
     return fresh;
   } catch (err) {
-    const cached = await cache.match(request);
-    if (cached) return cached;
+    const cachedExact = await cache.match(request);
+    if (cachedExact) return cachedExact;
+    const fallback = await cachedIndexOrOffline(cache);
+    if (fallback) return fallback;
     throw err;
   }
 }
@@ -86,7 +105,7 @@ self.addEventListener('fetch', (event) => {
   if (isAuthOrDataUrl(url)) return; // network only; do not cache
   if (url.origin !== self.location.origin) return;
   if (isHtmlRequest(request, url)) {
-    event.respondWith(networkFirst(request));
+    event.respondWith(networkFirstNavigation(request));
     return;
   }
   event.respondWith(staleWhileRevalidate(request));

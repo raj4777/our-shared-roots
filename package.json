@@ -1,0 +1,14 @@
+{
+  "name": "our-shared-roots",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && node scripts/postbuild.mjs",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "npm run build && node test/test_setup_and_pages.mjs"
+  },
+  "devDependencies": {
+    "vite": "^6.3.5"
+  }
+}

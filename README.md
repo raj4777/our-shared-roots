@@ -11,12 +11,14 @@ This repository is a generic, publishable starter. It ships no family data and n
 - Google sign-in
 - Firestore security rules that reserve create/delete and access-list changes for the Super Admin
 - A compact change log with revert, plus a one-time move page if an older archive still stores history inside the tree document
-- A small progressive web app (manifest, icons, service worker). The service worker uses network-first for HTML and does not cache Auth or Firestore
+- A compact System / Light / Dark theme toggle in the tree and admin headers. The default follows the device, and the choice is saved in this browser
+- Photo storage statistics on the admin Overview, and GEDCOM import/export at the top of the Data tab
+- A small progressive web app (manifest, icons, service worker). CSS and JavaScript are emitted with content hashes. The service worker uses network-first for HTML, precaches the hashed assets, and does not cache Auth or Firestore
 
 ## Requirements
 
 - A Google account
-- [Node.js](https://nodejs.org/) (for the setup script)
+- [Node.js](https://nodejs.org/) 18 or later (for the Vite build and the setup script)
 - The [Firebase CLI](https://firebase.google.com/docs/cli): `npm install -g firebase-tools`
 
 ## 1. Create a Firebase project
@@ -60,9 +62,20 @@ A Blaze (pay-as-you-go) plan is required if you later want official Firestore ba
 
 Save it as a JSON file, for example `firebase-web-config.json` (use quoted keys). Do not commit this file.
 
-## 5. Run setup
+## 5. Build the site
 
 From this repository:
+
+```bash
+npm install
+npm run build
+```
+
+That compiles the page modules and writes hashed CSS and JavaScript into `dist/`. Re-run `npm run build` whenever you change the source, then re-run setup (or copy the new `dist/` into your deploy folder and keep your existing `dist/config.js`).
+
+## 6. Run setup
+
+Setup writes a self-contained deploy folder. It copies the built `dist/` site, adds your `config.js`, and fills in Firestore rules and Hosting config.
 
 ```bash
 # macOS / Linux
@@ -98,23 +111,23 @@ What the flags mean:
 | `--out` | Output folder | `./deploy-<project-id>` |
 | `--force` | Overwrite an existing output folder | off |
 
-The script refuses to overwrite an existing output folder unless you pass `--force` or confirm at the prompt. The output folder is gitignored.
+The script refuses to overwrite an existing output folder unless you pass `--force` or confirm at the prompt. The output folder is gitignored. If `dist/` is missing, it tells you to run `npm run build` first.
 
 It writes:
 
 ```
 deploy-YOUR_PROJECT_ID/
-  public/                 site files, including public/config.js
+  dist/                   built site, including dist/config.js
   firestore.rules         rules with your Super Admin email and document IDs
   firestore.indexes.json
-  firebase.json           Hosting headers, rewrites, and the Firestore location
+  firebase.json           Hosting points at dist/, with hashed-asset cache headers
   .firebaserc             your project ID
   README.md
 ```
 
-`public/config.js` defines `window.OSR_CONFIG` (Firebase web config, Super Admin email, site title, archive IDs). The pages load it before the app starts.
+`dist/config.js` defines `window.OSR_CONFIG` (Firebase web config, Super Admin email, site title, archive IDs). The pages load it before the app starts. A filled `config.js` is gitignored and should never be committed.
 
-## 6. Deploy
+## 7. Deploy
 
 ```bash
 firebase login
@@ -124,9 +137,9 @@ firebase deploy
 
 This deploys **Hosting** and **Firestore rules**. After the first deploy, the site is typically at `https://YOUR_PROJECT_ID.web.app/`.
 
-Rewrites keep older paths working: `/genealogy-studio.html` and `/family-tree.html` serve the tree; `/genealogy-admin.html` and `/admin` serve the admin panel.
+Old alias paths 301-redirect to the canonical pages: `/genealogy-studio.html` and `/family-tree.html` go to `/`; `/genealogy-admin.html` goes to `/admin.html`. `/admin` still rewrites to `/admin.html`. Hashed files under `/assets/` are cached for a long time; HTML, the service worker, theme boot, and `config.js` are not cached.
 
-## 7. First sign-in as Super Admin
+## 8. First sign-in as Super Admin
 
 1. Open the site and sign in with the **same Google account** you passed as `--super-admin`.
 2. That first visit creates the two archive documents. Anyone else who signs in before that will be denied until the archive exists.
@@ -138,14 +151,14 @@ Rewrites keep older paths working: `/genealogy-studio.html` and `/family-tree.ht
 After setup, you can preview without deploying:
 
 ```bash
-npx --yes serve deploy-YOUR_PROJECT_ID/public
+npx --yes serve deploy-YOUR_PROJECT_ID/dist
 ```
 
 Sign-in will only work if `localhost` is in the project's authorized domains. The app talks to your real Firebase project, not a mock.
 
 ## Configuration file
 
-If you want to run the `src/` files directly, copy `config.example.js` to `config.js` at the site root and fill it in. A filled `config.js` is gitignored and should never be committed.
+If you want to preview the Vite build without running setup, copy `config.example.js` to `dist/config.js` after `npm run build` and fill it in. A filled `config.js` is gitignored and should never be committed.
 
 ## Firestore rules tests
 
