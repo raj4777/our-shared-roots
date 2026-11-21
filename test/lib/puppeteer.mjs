@@ -69,6 +69,9 @@ const real = await loadPuppeteer();
 
 export default {
   launch(options = {}) {
-    return real.launch({ ...options, executablePath: resolveChrome(options.executablePath) });
+    // Newer puppeteer-core only accepts headless true/false/'shell';
+    // older tests pass 'new', which meant the same as true.
+    const headless = options.headless === 'new' ? true : options.headless;
+    return real.launch({ ...options, headless, executablePath: resolveChrome(options.executablePath) });
   }
 };

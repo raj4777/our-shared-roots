@@ -10,7 +10,10 @@
     "test:rules": "cd rules-test && npm install --no-audit --no-fund && npx firebase emulators:exec --only firestore --project demo-family-tree \"node test.mjs\""
   },
   "devDependencies": {
-    "puppeteer-core": "^23.11.1",
+    "puppeteer-core": "^25.18.1",
     "vite": "^6.3.5"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true
   }
 }
