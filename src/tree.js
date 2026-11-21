@@ -3411,6 +3411,10 @@ import { applyHostingAuthDomain } from './firebase-config.js';
     };
     let canvasSwimlanesKey = '';
     let canvasJumpKey = '';
+    // Cards under an active finger/pen press. iOS Safari keeps sending a touch's
+    // events to the element it started on; if a recull removes that element the
+    // gesture goes dead, so pinned cards stay in the DOM until the press ends.
+    const canvasPinnedNodes = new Set();
 
     function clearCanvasDomLayers() {
       canvasDom.nodes.clear();
@@ -3454,6 +3458,7 @@ import { applyHostingAuthDomain } from './firebase-config.js';
     function pruneCanvasMap(map, used) {
       for (const [key, el] of map) {
         if (used.has(key)) continue;
+        if (el && canvasPinnedNodes.has(el)) continue;
         if (el && el.remove) el.remove();
         map.delete(key);
       }
@@ -5511,6 +5516,13 @@ import { applyHostingAuthDomain } from './firebase-config.js';
       let pinchStart = null;
       let dragMoved = false;
       let suppressNextClick = false;
+      const pressedCards = new Map();
+      // Once a pan or pinch is under way, capture the pointer on the viewport (which is
+      // never re-rendered) so moves keep arriving even if the touched card is culled.
+      // Not done on pointerdown, so a plain tap still clicks the card.
+      const captureOnViewport = (pointerId) => {
+        try { if (!viewport.hasPointerCapture(pointerId)) viewport.setPointerCapture(pointerId); } catch (_) { /* pointer already gone */ }
+      };
       const zoomAt = (mx, my, nextZoomRaw) => {
         const nextZoom = Math.max(0.28, Math.min(2.1, nextZoomRaw));
         uiState.panX = mx - (mx - uiState.panX) * (nextZoom / uiState.zoom);
@@ -5526,6 +5538,8 @@ import { applyHostingAuthDomain } from './firebase-config.js';
         if (e.pointerType === 'mouse' && e.button !== 0) return;
         const onInteractive = e.target.closest('[data-person-card]') || e.target.closest('button');
         activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        const pressedCard = e.pointerType !== 'mouse' && e.target.closest('[data-person-card]');
+        if (pressedCard) { pressedCards.set(e.pointerId, pressedCard); canvasPinnedNodes.add(pressedCard); }
         if (activePointers.size === 2) {
           const [a, b] = Array.from(activePointers.values());
           const rect = viewport.getBoundingClientRect();
@@ -5537,6 +5551,7 @@ import { applyHostingAuthDomain } from './firebase-config.js';
           };
           uiState.isDragging = false;
           dragMoved = true;
+          activePointers.forEach((_, id) => captureOnViewport(id));
           return;
         }
         // Mouse drags never start on a card/button (keeps click behaviour); touch may pan from anywhere.
@@ -5561,6 +5576,7 @@ import { applyHostingAuthDomain } from './firebase-config.js';
         }
         if (!uiState.isDragging) return;
         if (!dragMoved && Math.hypot(e.clientX - uiState.dragOriginX, e.clientY - uiState.dragOriginY) < 6) return;
+        if (!dragMoved) captureOnViewport(e.pointerId);
         dragMoved = true;
         uiState.panX = e.clientX - uiState.dragStartX;
         uiState.panY = e.clientY - uiState.dragStartY;
@@ -5568,6 +5584,8 @@ import { applyHostingAuthDomain } from './firebase-config.js';
       });
       const endPointer = (e) => {
         activePointers.delete(e.pointerId);
+        const pressedCard = pressedCards.get(e.pointerId);
+        if (pressedCard) { pressedCards.delete(e.pointerId); canvasPinnedNodes.delete(pressedCard); }
         if (activePointers.size < 2) pinchStart = null;
         if (activePointers.size === 0) {
           if (uiState.isDragging && dragMoved) suppressNextClick = true;
@@ -5578,6 +5596,13 @@ import { applyHostingAuthDomain } from './firebase-config.js';
       };
       window.addEventListener('pointerup', endPointer);
       window.addEventListener('pointercancel', endPointer);
+      // Safari backstop: stop the page itself from scrolling or pinch-zooming while a
+      // finger moves on the tree (touch-action alone is not always honoured on iOS).
+      // touchmove only, so taps still produce clicks.
+      viewport.addEventListener('touchmove', e => {
+        if (e.cancelable && !e.target.closest('.canvas-float-toolbar')) e.preventDefault();
+      }, { passive: false });
+      ['gesturestart', 'gesturechange'].forEach(type => viewport.addEventListener(type, e => e.preventDefault(), { passive: false }));
       // A pan that ended over a card should not also open that card.
       viewport.addEventListener('click', e => {
         if (suppressNextClick) {
