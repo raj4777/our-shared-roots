@@ -154,7 +154,16 @@ Old alias paths 301-redirect to the canonical pages: `/genealogy-studio.html` an
 
 ### Upgrading an existing site
 
-Deploy the new rules and the new pages together (`npm run build`, then `firebase deploy`). Existing documents keep working without a migration script: documents without `adminEmails` are still accepted, and the Super Admin's first save adds it. After that first save, open **Admin → People & access** and check who has the Admin role; the app asks you to review any admin role it could not confirm from older data. Old tabs left open from before the update will get a "someone else saved first" message on their next save and need a reload.
+Deploy the new rules and the new pages together. From the repo folder, the deploy script rebuilds the site, checks that the build has no test hooks, copies the new `dist/` into your deploy folder (keeping its `config.js`), and runs `firebase deploy` after you type `DEPLOY`:
+
+```bash
+bash deploy.sh --site deploy-YOUR_PROJECT_ID --dry-run   # macOS / Linux: checks and build only, prints the firebase command
+bash deploy.sh --site deploy-YOUR_PROJECT_ID             # build, confirm, deploy
+```
+
+On Windows use `.\deploy.ps1 -Site deploy-YOUR_PROJECT_ID -DryRun`. Options: `--test` (run the tests first; needs Chrome and Java), `--only hosting|rules|all`, `--preview` (temporary preview channel; it uses the live database), `--yes` (no prompt). Run `bash deploy.sh --help` for the full list.
+
+Existing documents keep working without a migration script: documents without `adminEmails` are still accepted, and the Super Admin's first save adds it. After that first save, open **Admin → People & access** and check who has the Admin role; the app asks you to review any admin role it could not confirm from older data. Old tabs left open from before the update will get a "someone else saved first" message on their next save and need a reload.
 
 ## Local preview (optional)
 
