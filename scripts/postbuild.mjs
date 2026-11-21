@@ -3,7 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const dist = path.join(ROOT, 'dist');
+// Optional argument: output folder (default dist; the test build uses dist-test).
+const dist = path.join(ROOT, process.argv[2] || 'dist');
 const assetsDir = path.join(dist, 'assets');
 const assets = fs.existsSync(assetsDir) ? fs.readdirSync(assetsDir) : [];
 const css = assets.filter((f) => /^app\.[a-zA-Z0-9_-]+\.css$/.test(f)).sort();

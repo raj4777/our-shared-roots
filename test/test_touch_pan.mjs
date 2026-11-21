@@ -6,7 +6,7 @@ import path from 'node:path';
 import puppeteer from './lib/puppeteer.mjs';
 import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const DEFAULT_DIST = path.join(ROOT, 'dist');
+const DEFAULT_DIST = path.join(ROOT, 'dist-test'); // test build: has the window.__TREE hook
 const readApp = () => ['src/index.html', 'src/tree.js'].map(f => fs.readFileSync(path.join(ROOT, f), 'utf8')).join('\n');
 
 const DIST = process.env.TOUCH_TEST_DIST || DEFAULT_DIST;

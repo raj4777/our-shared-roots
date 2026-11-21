@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import puppeteer from './lib/puppeteer.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const DIST = path.join(ROOT, 'dist');
+const DIST = path.join(ROOT, 'dist-test'); // test build: has the window.__ADMIN hook
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.png': 'image/png' };
 const failed = [];
 function assert(cond, msg) {

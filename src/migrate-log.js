@@ -791,35 +791,39 @@ import { applyHostingAuthDomain } from './firebase-config.js';
     $('btn-mig-backup').addEventListener('click', () => { try { downloadBackup(); } catch (e) { showError(e); } });
     $('btn-mig-move').addEventListener('click', () => { performMove(); });
 
-    window.__MIGRATE = {
-      startDemo,
-      loadDocuments,
-      loadFixture,
-      unloadDocumentsForTest,
-      inspectArchive,
-      inspectAndRender,
-      runDryRun,
-      downloadBackup,
-      performMove,
-      formatError: formatFirestoreError,
-      getPlan: () => lastPlan,
-      isBackupDownloaded: () => backupDownloaded,
-      isDryRunOk: () => dryRunOk,
-      forceBackupDownloaded: () => { backupDownloaded = true; updateMoveEnabled(); },
-      setTestLogWriteCount: (n) => { testLogWriteCount = n; },
-      errorText: () => $('mig-error').textContent || '',
-      errorCode: () => $('mig-error').getAttribute('data-error-code') || '',
-      stateText: () => $('mig-state-summary').textContent || '',
-      countsText: () => $('mig-counts').textContent || '',
-      badgeText: () => $('mig-state-badge').textContent || '',
-      logText: () => $('mig-log').innerText || '',
-      dryText: () => $('mig-dry-body').innerText || '',
-      sizeText: () => $('mig-size-grid').innerText || '',
-      showError
-    };
+    // Test-only hook: compiled in only for `vite build --mode test` (dist-test/).
+    // Production builds define __OSR_TEST_HOOKS__ as false, so this block is dropped.
+    if (__OSR_TEST_HOOKS__) {
+      window.__MIGRATE = {
+        startDemo,
+        loadDocuments,
+        loadFixture,
+        unloadDocumentsForTest,
+        inspectArchive,
+        inspectAndRender,
+        runDryRun,
+        downloadBackup,
+        performMove,
+        formatError: formatFirestoreError,
+        getPlan: () => lastPlan,
+        isBackupDownloaded: () => backupDownloaded,
+        isDryRunOk: () => dryRunOk,
+        forceBackupDownloaded: () => { backupDownloaded = true; updateMoveEnabled(); },
+        setTestLogWriteCount: (n) => { testLogWriteCount = n; },
+        errorText: () => $('mig-error').textContent || '',
+        errorCode: () => $('mig-error').getAttribute('data-error-code') || '',
+        stateText: () => $('mig-state-summary').textContent || '',
+        countsText: () => $('mig-counts').textContent || '',
+        badgeText: () => $('mig-state-badge').textContent || '',
+        logText: () => $('mig-log').innerText || '',
+        dryText: () => $('mig-dry-body').innerText || '',
+        sizeText: () => $('mig-size-grid').innerText || '',
+        showError
+      };
+    }
 
     const params = new URLSearchParams(location.search);
-    if (params.get('demo') === '1' || params.get('test') === '1') {
+    if (params.get('demo') === '1' || (__OSR_TEST_HOOKS__ && params.get('test') === '1')) {
       startDemo();
     } else {
       initLive();

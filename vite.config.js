@@ -4,11 +4,18 @@ import { fileURLToPath } from 'node:url';
 
 const rootDir = dirname(fileURLToPath(import.meta.url));
 
-export default defineConfig({
+// `vite build --mode test` writes dist-test/ with the window.__TREE / __ADMIN /
+// __MIGRATE test hooks compiled in. Every other mode (the normal `npm run build`
+// that produces dist/ for deploy) defines __OSR_TEST_HOOKS__ as false, so the
+// hooks are removed from the production bundle.
+export default defineConfig(({ mode }) => ({
+  define: {
+    __OSR_TEST_HOOKS__: JSON.stringify(mode === 'test')
+  },
   root: 'src',
   publicDir: resolve(rootDir, 'static'),
   build: {
-    outDir: resolve(rootDir, 'dist'),
+    outDir: resolve(rootDir, mode === 'test' ? 'dist-test' : 'dist'),
     emptyOutDir: true,
     sourcemap: false,
     minify: false,
@@ -33,4 +40,4 @@ export default defineConfig({
       }
     }
   }
-});
+}));

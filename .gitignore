@@ -15,6 +15,7 @@ Thumbs.db
 # Dependencies and tooling
 node_modules/
 dist/
+dist-test/
 .firebase/
 firebase-debug.log
 firestore-debug.log

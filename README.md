@@ -172,7 +172,7 @@ If you want to preview the Vite build without running setup, copy `config.exampl
 
 ## Tests
 
-- `npm test` builds the site and runs the setup, page-load, phone touch, and access/revision page tests in headless Chrome. It uses `puppeteer-core` from `devDependencies` (run `npm install` once) and finds Chrome or Chromium automatically; set `PUPPETEER_EXECUTABLE_PATH` (or `CHROME_PATH`) if yours is somewhere unusual.
+- `npm test` builds the site and runs the setup, page-load, phone touch, and access/revision page tests in headless Chrome. It makes two builds: the normal `dist/` (what you deploy) and `dist-test/` (`npm run build:test`), which is the only build that includes the `window.__TREE` / `__ADMIN` / `__MIGRATE` test hooks the page tests use. A check confirms `dist/` has none of them. Never deploy `dist-test/`. It uses `puppeteer-core` from `devDependencies` (run `npm install` once) and finds Chrome or Chromium automatically; set `PUPPETEER_EXECUTABLE_PATH` (or `CHROME_PATH`) if yours is somewhere unusual.
 - `npm run test:rules` runs the Firestore rules suite in the emulator (needs Java 11+). See `rules-test/README.md`. The suite uses only synthetic people and the rules template (or a generated `firestore.rules` file).
 
 ## License
