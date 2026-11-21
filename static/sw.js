@@ -1,7 +1,7 @@
 /* Family tree service worker.
    Network-first for HTML navigations, then cached index.html, then offline.html.
-   Never caches Firebase Auth, Firestore, Hosting reserved /__/ paths, or Storage photo URLs (including tokenised download URLs). */
-const CACHE_VERSION = 'osr-pwa-v4';
+   Never caches Firebase Auth, Firestore, Hosting reserved /__/ paths, /config.js, sw.js, or Storage photo URLs (including tokenised download URLs). */
+const CACHE_VERSION = 'osr-pwa-v6';
 const PRECACHE_URLS = [
   '/',
   '/index.html',
@@ -36,6 +36,16 @@ function isAuthOrDataUrl(url) {
   if (url.pathname === '/__/' || url.pathname.startsWith('/__/')) return true;
   if ((host.includes('firebasestorage') || host.endsWith('.googleapis.com')) && (url.searchParams.has('token') || /[?&]token=/.test(url.search))) return true;
   return false;
+}
+
+// Same-origin files that must always come from the network and never be
+// stored in Cache Storage. /config.js is generated per deployment (Firebase
+// config, Super Admin, archive IDs) and Hosting serves it no-store; sw.js is
+// the worker itself. /__/ paths are already excluded by isAuthOrDataUrl.
+const NEVER_CACHE_PATHS = ['/config.js', '/sw.js'];
+
+function isNeverCachePath(url) {
+  return NEVER_CACHE_PATHS.includes(url.pathname) || url.pathname.startsWith('/__/');
 }
 
 function isHtmlRequest(request, url) {
@@ -104,6 +114,7 @@ self.addEventListener('fetch', (event) => {
   try { url = new URL(request.url); } catch (e) { return; }
   if (isAuthOrDataUrl(url)) return; // network only; do not cache
   if (url.origin !== self.location.origin) return;
+  if (isNeverCachePath(url)) return; // network only; respects Hosting no-store
   if (isHtmlRequest(request, url)) {
     event.respondWith(networkFirstNavigation(request));
     return;

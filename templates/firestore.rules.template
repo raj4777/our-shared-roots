@@ -7,19 +7,34 @@ rules_version = '2';
 //                                 payloadJson without the change log)
 //   archives/__ARCHIVE_LOG_ID__ — the change log (changeLogJson: { changeEvents,
 //                                 changeSequence }, plus updatedAt / updatedBy*)
-// Both are written together in one transaction (or a writeBatch fallback).
+// Both are written together in one transaction.
 // Access lists live only on the main document; log-doc rules look them up there.
 //
 // Roles enforced here:
-//   Super Admin : __SUPER_ADMIN_EMAIL__. Full access, including
-//                 create, delete, and changing who is Super Admin.
-//   Editors     : emails in editorEmails (in-app "admin" and "edit" roles). Can
-//                 read and update the tree and the change log. They cannot
-//                 remove or replace the Super Admin, create or delete the
-//                 archive, delete the log, impersonate another user, or change
-//                 authorizedEmails, editorEmails, or superAdminEmail.
+//   Super Admin : __SUPER_ADMIN_EMAIL__. Full access, including create and
+//                 delete, and the only role that may change the access lists
+//                 (authorizedEmails, editorEmails, adminEmails).
+//   Admins      : emails in adminEmails (always also in editorEmails). Same as
+//                 editors, plus they may rename the tree (title).
+//   Editors     : emails in editorEmails. Can read and update the tree and the
+//                 change log. They cannot remove or replace the Super Admin,
+//                 create or delete the archive, delete the log, impersonate
+//                 another user, change any access list, or skip a revision.
 //   Viewers     : emails in authorizedEmails only. Read-only.
 //   Everyone else (including signed-out users) is denied.
+//
+// Every write to the tree document, including the Super Admin's, must:
+//   - keep the required fields and types (validArchive),
+//   - stamp the writer's own uid and email (stampedByMe),
+//   - set revision to exactly the stored revision + 1 (revisionAdvances), so a
+//     stale or blind write from an old tab or a custom client is refused.
+// The access lists on the document are the only source of truth for roles.
+// accessControl.permissions inside payloadJson is display data; the pages
+// rebuild roles from these lists on load, so editing it grants nothing.
+//
+// Migration: documents written before adminEmails existed are accepted as
+// they are. Until the Super Admin's first save adds adminEmails, any editor
+// may still rename the tree (the old behaviour).
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -74,7 +89,12 @@ service cloud.firestore {
         || (!existsAfter(archivePath()) && exists(archivePath()) && isEditorOf(get(archivePath()).data));
     }
 
-    // Required fields and types for the tree document.
+    function isAdminOf(data) {
+      return signedIn() && data.get('adminEmails', null) is list && myEmail() in data.adminEmails;
+    }
+
+    // Required fields and types for the tree document (the merged result of a
+    // write). adminEmails is optional so older documents stay valid.
     function validArchive(d) {
       return d.keys().hasAll(['title', 'revision', 'superAdminEmail', 'authorizedEmails',
                               'editorEmails', 'updatedAt', 'updatedByEmail', 'updatedByUid',
@@ -83,33 +103,81 @@ service cloud.firestore {
         && d.payloadJson.size() <= 1048000
         && d.authorizedEmails is list && d.authorizedEmails.size() <= 1000
         && d.editorEmails is list && d.editorEmails.size() <= 1000
+        && (!('adminEmails' in d) || (d.adminEmails is list && d.adminEmails.size() <= 1000))
         && d.superAdminEmail is string
+        && d.revision is int && d.revision >= 1
         && d.updatedAt is string
+        && d.updatedByEmail is string
+        && d.updatedByUid is string
         && d.title is string && d.title.size() <= 500;
     }
 
-    // On update, existing unexpected fields may remain (merge writes), but editors
-    // cannot introduce new unknown keys. hasOnly(request.resource.data) would reject
-    // a live document that already has an extra field.
+    // Lists the Super Admin writes must be consistent: every admin is an
+    // editor and every editor is a viewer.
+    function listsConsistent(d) {
+      return d.authorizedEmails.hasAll(d.editorEmails)
+        && (!('adminEmails' in d) || d.editorEmails.hasAll(d.adminEmails));
+    }
+
+    // On update, existing unexpected fields may remain (merge writes), but no
+    // writer may introduce new unknown keys. hasOnly(request.resource.data)
+    // would reject a live document that already has an extra field.
     function archiveUpdateKeysAllowed() {
       return request.resource.data.diff(resource.data).affectedKeys()
         .hasOnly(['title', 'revision', 'superAdminEmail', 'authorizedEmails',
-                  'editorEmails', 'updatedAt', 'updatedByEmail', 'updatedByUid',
-                  'payloadJson']);
+                  'editorEmails', 'adminEmails', 'updatedAt', 'updatedByEmail',
+                  'updatedByUid', 'payloadJson']);
     }
 
-    function validLog(d) {
-      return d.keys().hasOnly(['changeLogJson', 'updatedAt', 'updatedByEmail', 'updatedByUid'])
-        && d.changeLogJson is string
+    // Server-side revision guard: each save moves revision forward by exactly
+    // one from what is stored. A second tab or a custom client that read an
+    // older copy cannot overwrite a newer save.
+    function revisionAdvances() {
+      return request.resource.data.revision is int
+        && (!(resource.data.revision is number)
+            || request.resource.data.revision == resource.data.revision + 1);
+    }
+
+    // Editors and admins send all access lists back unchanged.
+    function accessListsUnchanged() {
+      return request.resource.data.superAdminEmail == resource.data.superAdminEmail
+        && request.resource.data.authorizedEmails == resource.data.authorizedEmails
+        && request.resource.data.editorEmails == resource.data.editorEmails
+        && request.resource.data.get('adminEmails', null) == resource.data.get('adminEmails', null);
+    }
+
+    // Renaming the tree is an admin action once adminEmails exists.
+    function titleChangeAllowed() {
+      return request.resource.data.title == resource.data.title
+        || isAdminOf(resource.data)
+        || !('adminEmails' in resource.data);
+    }
+
+    // Log document. On update only these keys may change, so a log document
+    // that already carries an extra legacy field can still be saved.
+    function validLogFields(d) {
+      return d.changeLogJson is string
         && d.changeLogJson.size() <= 1048000
         && d.updatedAt is string
         && d.updatedByEmail is string
         && d.updatedByUid is string;
     }
 
+    function validLogCreate(d) {
+      return d.keys().hasOnly(['changeLogJson', 'updatedAt', 'updatedByEmail', 'updatedByUid'])
+        && validLogFields(d);
+    }
+
+    function validLogUpdate() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['changeLogJson', 'updatedAt', 'updatedByEmail', 'updatedByUid'])
+        && validLogFields(request.resource.data);
+    }
+
     // The writer stamps their own identity and cannot pose as someone else.
     function stampedByMe(d) {
-      return d.updatedByUid == request.auth.uid
+      return request.auth != null
+        && d.updatedByUid == request.auth.uid
         && d.updatedByEmail is string
         && d.updatedByEmail.lower() == myEmail();
     }
@@ -118,7 +186,8 @@ service cloud.firestore {
     function keepsSuperAdmin(d) {
       return d.superAdminEmail.lower() == superAdminEmail()
         && superAdminEmail() in d.authorizedEmails
-        && superAdminEmail() in d.editorEmails;
+        && superAdminEmail() in d.editorEmails
+        && (!('adminEmails' in d) || superAdminEmail() in d.adminEmails);
     }
 
     match /archives/__ARCHIVE_ID__ {
@@ -133,24 +202,27 @@ service cloud.firestore {
       allow create: if isSuperAdmin()
         && validArchive(request.resource.data)
         && request.resource.data.keys().hasOnly(['title', 'revision', 'superAdminEmail', 'authorizedEmails',
-                                                 'editorEmails', 'updatedAt', 'updatedByEmail', 'updatedByUid',
-                                                 'payloadJson'])
-        && keepsSuperAdmin(request.resource.data);
+                                                 'editorEmails', 'adminEmails', 'updatedAt', 'updatedByEmail',
+                                                 'updatedByUid', 'payloadJson'])
+        && stampedByMe(request.resource.data)
+        && keepsSuperAdmin(request.resource.data)
+        && listsConsistent(request.resource.data);
 
-      // Saves. Editors may change tree data. Only the Super Admin may change
-      // who has access (authorizedEmails, editorEmails, superAdminEmail).
-      // Editors must send those three fields back unchanged (same values and
-      // list order) or the write is refused.
-      allow update: if isSuperAdmin()
-        || (isEditorOf(resource.data)
-            && validArchive(request.resource.data)
-            && archiveUpdateKeysAllowed()
-            && stampedByMe(request.resource.data)
-            && keepsSuperAdmin(request.resource.data)
-            && request.resource.data.superAdminEmail == resource.data.superAdminEmail
-            && request.resource.data.authorizedEmails == resource.data.authorizedEmails
-            && request.resource.data.editorEmails == resource.data.editorEmails
-           );
+      // Saves. Everyone (Super Admin included) must send a valid, stamped
+      // document with revision = stored revision + 1. Only the Super Admin may
+      // change the access lists. Editors must send them back unchanged (same
+      // values and order); only admins may change the title.
+      allow update: if validArchive(request.resource.data)
+        && archiveUpdateKeysAllowed()
+        && stampedByMe(request.resource.data)
+        && keepsSuperAdmin(request.resource.data)
+        && revisionAdvances()
+        && (
+          (isSuperAdmin() && listsConsistent(request.resource.data))
+          || (isEditorOf(resource.data)
+              && accessListsUnchanged()
+              && titleChangeAllowed())
+        );
 
       allow delete: if isSuperAdmin();
     }
@@ -162,12 +234,15 @@ service cloud.firestore {
       allow list: if false;
 
       // Super Admin or an editor of the existing archive may create or update
-      // the log. Editors cannot delete it.
-      allow create: if isSuperAdmin()
-        || (canEditArchive() && validLog(request.resource.data) && stampedByMe(request.resource.data));
+      // the log, always with valid fields and their own stamp. Only the Super
+      // Admin may delete it.
+      allow create: if canEditArchive()
+        && validLogCreate(request.resource.data)
+        && stampedByMe(request.resource.data);
 
-      allow update: if isSuperAdmin()
-        || (canEditArchive() && validLog(request.resource.data) && stampedByMe(request.resource.data));
+      allow update: if canEditArchive()
+        && validLogUpdate()
+        && stampedByMe(request.resource.data);
 
       allow delete: if isSuperAdmin();
     }

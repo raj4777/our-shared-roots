@@ -29,7 +29,10 @@ const SRC = path.join(ROOT, 'src');
 const DIST = path.join(ROOT, 'dist');
 const TEMPLATES = path.join(ROOT, 'templates');
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Strict, lowercase-only email: no quotes, backslashes, spaces, or other
+// characters that could break out of the rules string it is written into.
+const EMAIL_RE = /^[a-z0-9](?:[a-z0-9._%+-]{0,62}[a-z0-9_%+-])?@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+const LOCATION_RE = /^[a-z][a-z0-9-]{1,39}$/;
 const PROJECT_RE = /^[a-z][a-z0-9-]{5,29}$/;
 const ARCHIVE_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -90,8 +93,27 @@ function fail(msg) {
 
 function validateEmail(email) {
   const v = String(email || '').trim().toLowerCase();
-  if (!EMAIL_RE.test(v)) fail(`Invalid email address: ${email}`);
+  if (v.length > 254 || !EMAIL_RE.test(v) || v.includes('..')) fail(`Invalid email address: ${JSON.stringify(String(email))}`);
   return v;
+}
+
+function validateLocation(loc) {
+  const v = String(loc || '').trim().toLowerCase();
+  if (!LOCATION_RE.test(v)) fail(`Invalid Firestore location "${loc}". Use a location ID such as nam5, eur3, or asia-south2.`);
+  return v;
+}
+
+// Escapes a value for a single-quoted string in firestore.rules. The email is
+// already validated above, so this is defence in depth.
+function rulesStringLiteral(value) {
+  const v = String(value);
+  if (/[\u0000-\u001f\u007f]/.test(v)) fail('Refusing to write a control character into firestore.rules.');
+  return v.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+// Escapes a value for a JSON string written into a template.
+function jsonStringBody(value) {
+  return JSON.stringify(String(value)).slice(1, -1);
 }
 
 function validateProjectId(id) {
@@ -246,7 +268,7 @@ async function collectConfig(args) {
 
   let location = args.location || args['firestore-location'] || '';
   if (!location && interactive) location = await ask('Firestore location (nam5, asia-south2, …)', 'nam5');
-  location = (location || 'nam5').trim() || 'nam5';
+  location = validateLocation((location || 'nam5').trim() || 'nam5');
 
   let archiveId = args['archive-id'] || '';
   if (!archiveId && interactive) archiveId = await ask('Archive document ID', 'familytree');
@@ -297,13 +319,13 @@ function generate(cfg) {
 
   const rulesTpl = fs.readFileSync(path.join(TEMPLATES, 'firestore.rules.template'), 'utf8');
   fs.writeFileSync(path.join(dest, 'firestore.rules'), fillTemplate(rulesTpl, {
-    __SUPER_ADMIN_EMAIL__: cfg.superAdminEmail,
-    __ARCHIVE_ID__: cfg.archiveId,
-    __ARCHIVE_LOG_ID__: cfg.archiveLogId
+    __SUPER_ADMIN_EMAIL__: rulesStringLiteral(validateEmail(cfg.superAdminEmail)),
+    __ARCHIVE_ID__: validateArchiveId(cfg.archiveId, 'archive id'),
+    __ARCHIVE_LOG_ID__: validateArchiveId(cfg.archiveLogId, 'archive log id')
   }));
 
   const fbTpl = fs.readFileSync(path.join(TEMPLATES, 'firebase.json.template'), 'utf8');
-  const firebaseJson = fillTemplate(fbTpl, { __FIRESTORE_LOCATION__: cfg.location });
+  const firebaseJson = fillTemplate(fbTpl, { __FIRESTORE_LOCATION__: jsonStringBody(validateLocation(cfg.location)) });
   // sanity: still valid JSON
   JSON.parse(firebaseJson);
   fs.writeFileSync(path.join(dest, 'firebase.json'), firebaseJson);

@@ -144,7 +144,17 @@ Old alias paths 301-redirect to the canonical pages: `/genealogy-studio.html` an
 1. Open the site and sign in with the **same Google account** you passed as `--super-admin`.
 2. That first visit creates the two archive documents. Anyone else who signs in before that will be denied until the archive exists.
 3. Open **Admin** (the quiet Admin control in the header). On **People & access**, add relatives by email and grant **View** or **Edit**. Only the Super Admin can change who may sign in.
-4. In-app **Admin** and **Edit** roles can update the tree (Edit) or use the admin panel (Admin). They cannot replace the Super Admin or rewrite the access lists.
+4. In-app **Admin** and **Edit** roles can update the tree (Edit) or also use the admin panel and rename the tree (Admin). They cannot replace the Super Admin or change the access lists.
+
+### How access is enforced
+
+- Roles live in three lists on the tree document that only the Super Admin can change: `authorizedEmails` (view), `editorEmails` (edit), and `adminEmails` (admin). The Firestore rules enforce them.
+- The access list shown in the app (inside the tree data) is rebuilt from those lists every time the tree loads, so an editor who edits the tree data directly cannot grant anyone access. If the app finds a mismatch, the Super Admin sees an "Access check" notice.
+- Every save, including the Super Admin's, must be stamped with the writer's own account, keep the document's required fields, and move `revision` forward by exactly one. An older tab or a custom client that tries to overwrite a newer save is refused by the server.
+
+### Upgrading an existing site
+
+Deploy the new rules and the new pages together (`npm run build`, then `firebase deploy`). Existing documents keep working without a migration script: documents without `adminEmails` are still accepted, and the Super Admin's first save adds it. After that first save, open **Admin → People & access** and check who has the Admin role; the app asks you to review any admin role it could not confirm from older data. Old tabs left open from before the update will get a "someone else saved first" message on their next save and need a reload.
 
 ## Local preview (optional)
 
@@ -160,9 +170,10 @@ Sign-in will only work if `localhost` is in the project's authorized domains. Th
 
 If you want to preview the Vite build without running setup, copy `config.example.js` to `dist/config.js` after `npm run build` and fill it in. A filled `config.js` is gitignored and should never be committed.
 
-## Firestore rules tests
+## Tests
 
-See `rules-test/README.md`. The suite uses only synthetic people and the rules template (or a generated `firestore.rules` file).
+- `npm test` builds the site and runs the setup, page-load, phone touch, and access/revision page tests in headless Chrome. It uses `puppeteer-core` from `devDependencies` (run `npm install` once) and finds Chrome or Chromium automatically; set `PUPPETEER_EXECUTABLE_PATH` (or `CHROME_PATH`) if yours is somewhere unusual.
+- `npm run test:rules` runs the Firestore rules suite in the emulator (needs Java 11+). See `rules-test/README.md`. The suite uses only synthetic people and the rules template (or a generated `firestore.rules` file).
 
 ## License
 

@@ -30,11 +30,11 @@ const precache = [
 const swPath = path.join(dist, 'sw.js');
 if (!fs.existsSync(swPath)) throw new Error('dist/sw.js missing; is publicDir static/?');
 let sw = fs.readFileSync(swPath, 'utf8');
-sw = sw.replace(/const CACHE_VERSION = 'osr-pwa-v\d+';/, "const CACHE_VERSION = 'osr-pwa-v5';");
+sw = sw.replace(/const CACHE_VERSION = 'osr-pwa-v\d+';/, "const CACHE_VERSION = 'osr-pwa-v6';");
 const list = precache.map((u) => `  '${u}'`).join(',\n');
 if (!/const PRECACHE_URLS = \[/.test(sw)) throw new Error('PRECACHE_URLS not found in sw.js');
 sw = sw.replace(/const PRECACHE_URLS = \[[\s\S]*?\];/, `const PRECACHE_URLS = [\n${list}\n];`);
 fs.writeFileSync(swPath, sw);
 fs.writeFileSync(path.join(dist, 'precache.json'), JSON.stringify(precache, null, 2) + '\n');
-console.log('postbuild: CACHE_VERSION osr-pwa-v5, precache', precache.length, 'urls');
+console.log('postbuild: CACHE_VERSION osr-pwa-v6, precache', precache.length, 'urls');
 console.log(precache.join('\n'));

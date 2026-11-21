@@ -1,6 +1,7 @@
 window.FIREBASE_CONFIG = window.FIREBASE_CONFIG || null;
 
 import { applyHostingAuthDomain } from './firebase-config.js';
+import { computeAccessListsFromPermissions, frozenAccessListsFromMainDoc, reconcilePermissionsWithMainDoc, describeAclReport, nextArchiveRevision } from './acl-core.js';
 
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
     import {
@@ -706,8 +707,11 @@ import { applyHostingAuthDomain } from './firebase-config.js';
       } else {
         parsed = createBlankDataset();
       }
-      if (parsed && !parsed.superAdminEmail && mainData && mainData.superAdminEmail) {
-        parsed.superAdminEmail = mainData.superAdminEmail;
+      // The top-level superAdminEmail is protected by the rules (it must equal
+      // the hardcoded Super Admin). Never trust a different value an editor
+      // may have written into payloadJson.
+      if (parsed && mainData && typeof mainData.superAdminEmail === 'string' && mainData.superAdminEmail.trim()) {
+        parsed.superAdminEmail = mainData.superAdminEmail.trim().toLowerCase();
       }
       const extracted = extractEmbeddedLog(parsed);
       const mergedLog = mergeLogStates(extracted.embeddedLog, logStateFromLogDoc(logData));
@@ -716,8 +720,15 @@ import { applyHostingAuthDomain } from './firebase-config.js';
         changeEvents: mergedLog.changeEvents,
         changeSequence: mergedLog.changeSequence
       });
+      // Roles come from the rules-protected lists on the document, not from
+      // accessControl.permissions in payloadJson (which any editor can write).
+      const aclReport = reconcilePermissionsWithMainDoc(state, mainData, {
+        superAdminEmail: getStoredSuperAdminEmail(state),
+        findPersonByEmail: (em) => findPersonByEmailInState(state, em)
+      });
       return {
         state,
+        aclReport,
         hadEmbeddedLog: Boolean(extracted.hadEmbeddedLog && ((extracted.embeddedLog?.changeEvents || []).length > 0 || (extracted.embeddedLog?.changeSequence || 0) > 0)),
         hadEmbeddedShape: extracted.hadEmbeddedLog
       };
@@ -741,7 +752,24 @@ import { applyHostingAuthDomain } from './firebase-config.js';
       logBaseUpdatedAt = (logData && logData.updatedAt) || null;
       latestMainData = mainData || null;
       latestLogData = logData || null;
+      notifyAclReport(assembled.aclReport);
       return assembled;
+    }
+
+    let lastAclNotice = '';
+    function notifyAclReport(report) {
+      if (!report || !report.applied) return;
+      const msg = describeAclReport(report);
+      if (msg) console.warn(msg);
+      let text = msg;
+      if (report.legacyNoAdminList && report.unverifiedAdmins.length) {
+        text = (text ? text + ' ' : '') + 'Please review the Admin role for: ' + report.unverifiedAdmins.join(', ')
+          + '. Older data could not confirm it; your next save stores roles in the protected lists.';
+      }
+      if (!text || !canManageAccess()) return;
+      if (text === lastAclNotice) return;
+      lastAclNotice = text;
+      try { showToast(text); } catch (e) {}
     }
 
     function canManageAccess(stateObj = appState) {
@@ -749,42 +777,17 @@ import { applyHostingAuthDomain } from './firebase-config.js';
     }
 
     function frozenAccessListsFromDoc(stateObj) {
-      const d = latestMainData || {};
-      const superEmail = (d.superAdminEmail || getStoredSuperAdminEmail(stateObj) || '').trim();
-      return {
-        superAdminEmail: superEmail,
-        authorizedEmails: Array.isArray(d.authorizedEmails) ? d.authorizedEmails.slice() : (superEmail ? [superEmail] : []),
-        editorEmails: Array.isArray(d.editorEmails) ? d.editorEmails.slice() : (superEmail ? [superEmail] : [])
-      };
+      return frozenAccessListsFromMainDoc(latestMainData, getStoredSuperAdminEmail(stateObj));
     }
 
     function computeRuleAccessLists(stateObj) {
-      // Editors must send the exact lists already on the document (Option B).
+      // Editors and in-app Admins must send the exact lists already on the
+      // document (Option B). Only the Super Admin rebuilds them, from
+      // permissions that were reconciled with the protected lists on load.
       if (!canManageAccess(stateObj)) {
         return frozenAccessListsFromDoc(stateObj);
       }
-      const superEmail = getStoredSuperAdminEmail(stateObj);
-      const authSet = new Set();
-      const editSet = new Set();
-
-      if (superEmail) {
-        authSet.add(superEmail);
-        editSet.add(superEmail);
-      }
-      (stateObj.accessControl?.permissions || []).forEach(pm => {
-        const em = (pm.email || '').trim().toLowerCase();
-        if (!em) return;
-        authSet.add(em);
-        if (pm.role === 'super_admin' || pm.role === 'admin' || pm.role === 'edit') {
-          editSet.add(em);
-        }
-      });
-
-      return {
-        superAdminEmail: superEmail,
-        authorizedEmails: Array.from(authSet),
-        editorEmails: Array.from(editSet)
-      };
+      return computeAccessListsFromPermissions(stateObj.accessControl?.permissions || [], getStoredSuperAdminEmail(stateObj));
     }
 
 
@@ -929,6 +932,7 @@ import { applyHostingAuthDomain } from './firebase-config.js';
         superAdminEmail: aclLists.superAdminEmail || '',
         authorizedEmails: aclLists.authorizedEmails || [],
         editorEmails: aclLists.editorEmails || [],
+        ...(Array.isArray(aclLists.adminEmails) ? { adminEmails: aclLists.adminEmails } : {}),
         updatedAt: metaExtras.updatedAt || new Date().toISOString(),
         updatedByEmail: metaExtras.updatedByEmail != null ? metaExtras.updatedByEmail : (getActiveUserEmail() || ''),
         updatedByUid: metaExtras.updatedByUid != null ? metaExtras.updatedByUid : ((firebaseUser && firebaseUser.uid) || ''),
@@ -954,6 +958,7 @@ import { applyHostingAuthDomain } from './firebase-config.js';
       const accessBytes =
         firestoreStringSize('authorizedEmails') + firestoreValueSize(fields.authorizedEmails || []) +
         firestoreStringSize('editorEmails') + firestoreValueSize(fields.editorEmails || []) +
+        (Array.isArray(fields.adminEmails) ? firestoreStringSize('adminEmails') + firestoreValueSize(fields.adminEmails) : 0) +
         firestoreStringSize('superAdminEmail') + firestoreValueSize(fields.superAdminEmail || '');
       return {
         kind: 'main',
@@ -1819,6 +1824,12 @@ import { applyHostingAuthDomain } from './firebase-config.js';
               conflict = { main: remoteMain, log: remoteLog };
               return;
             }
+            // Same check the rules make: we must be writing stored revision + 1.
+            if (remoteMain && typeof remoteMain.revision === 'number'
+                && Number(mainPayload.revision) !== remoteMain.revision + 1) {
+              conflict = { main: remoteMain, log: remoteLog };
+              return;
+            }
             tx.set(mainRef, mainPayload, { merge: true });
             if (logPayload) tx.set(logRef, logPayload, { merge: true });
           });
@@ -1857,6 +1868,17 @@ import { applyHostingAuthDomain } from './firebase-config.js';
       }
 
       syncTreeEmailsWithPermissions(stateObj);
+      // Pages that cannot manage access never write access changes into
+      // payloadJson: rebuild permissions from the protected lists first.
+      if (!canManageAccess(stateObj) && latestMainData) {
+        reconcilePermissionsWithMainDoc(stateObj, latestMainData, {
+          superAdminEmail: getStoredSuperAdminEmail(stateObj),
+          findPersonByEmail: (em) => findPersonByEmailInState(stateObj, em)
+        });
+      }
+      // Server-side conflict guard: the rules accept only stored revision + 1.
+      stateObj.tree = stateObj.tree || {};
+      stateObj.tree.revision = nextArchiveRevision(archiveBaseRevision, stateObj.tree.revision);
       const stamp = new Date().toISOString();
       const meta = {
         updatedAt: stamp,
@@ -5287,6 +5309,10 @@ import { applyHostingAuthDomain } from './firebase-config.js';
       // Rename Tree Dialog
       document.getElementById('btn-rename-tree').addEventListener('click', () => {
         if (!canEditTree()) return;
+        if (!canAccessAdminPanel()) {
+          showToast('Only an Admin or the Super Admin can rename the tree.');
+          return;
+        }
         const dlgInput = document.getElementById('dialog-input');
         dlgInput.value = appState.tree.title || getSiteTitle();
         document.getElementById('modal-dialog').classList.remove('hidden');

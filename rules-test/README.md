@@ -2,6 +2,18 @@
 
 These checks use the Firebase rules emulator and synthetic people only.
 
+Quickest: from the repository root run `npm run test:rules` (needs Java 11 or
+newer on your PATH). It installs this folder's packages, starts the Firestore
+emulator, runs `test.mjs`, and stops the emulator.
+
+The suite covers who can read and write, the change-log document, older
+production document shapes, and the hardening checks: planted access entries
+are ignored, only admins may rename the tree, every save must move `revision`
+forward by exactly one, and the Super Admin's own writes are validated and
+stamped too.
+
+Manual steps:
+
 1. From this directory: `npm install`
 2. In another terminal, from the repository root:
 

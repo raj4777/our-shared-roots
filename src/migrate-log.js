@@ -308,7 +308,8 @@ import { applyHostingAuthDomain } from './firebase-config.js';
 
       const nextMain = {
         title: (mainData && mainData.title) || tree.tree?.title || getSiteTitle(),
-        revision: (mainData && mainData.revision) != null ? mainData.revision : (tree.tree?.revision || 1),
+        // The rules accept only stored revision + 1 on every write.
+        revision: (mainData && typeof mainData.revision === 'number') ? mainData.revision + 1 : (tree.tree?.revision || 1),
         superAdminEmail: (mainData && mainData.superAdminEmail) || getConfiguredSuperAdminEmail(),
         authorizedEmails: Array.isArray(mainData && mainData.authorizedEmails) ? mainData.authorizedEmails : [],
         editorEmails: Array.isArray(mainData && mainData.editorEmails) ? mainData.editorEmails : [],
@@ -397,7 +398,7 @@ import { applyHostingAuthDomain } from './firebase-config.js';
         dryRunOk = !blocked;
         body.innerHTML = `
           <p>Would write <code class="font-mono" data-archive-log-path>archives/familytree_log</code> first (${escapeHtml(formatStorageKb(plan.projectedLog))}, ${plan.events} entries), then update <code class="font-mono" data-archive-path>archives/familytree</code> (${escapeHtml(formatStorageKb(plan.projectedMain))}) with payloadJson that no longer contains changeEvents or changeSequence.</p>
-          <p>Revision stays <strong>${escapeHtml(String(plan.nextMain.revision))}</strong>. ${plan.people} people and ${plan.families} families are unchanged. ${plan.embeddedCount} embedded entries and ${plan.snapshots} revert snapshots will be copied.</p>
+          <p>Revision goes to <strong>${escapeHtml(String(plan.nextMain.revision))}</strong>. ${plan.people} people and ${plan.families} families are unchanged. ${plan.embeddedCount} embedded entries and ${plan.snapshots} revert snapshots will be copied.</p>
           ${issues.length ? `<ul class="list-disc list-inside text-amber-900">${issues.map(i => `<li>${escapeHtml(i)}</li>`).join('')}</ul>` : '<p class="text-emerald-800 font-medium">Dry run looks safe to proceed after you download a backup.</p>'}
         `;
         addLog('Dry run: projected tree ' + formatStorageKb(plan.projectedMain) + ', log ' + formatStorageKb(plan.projectedLog) + ', ' + plan.events + ' merged entries (from ' + plan.embeddedCount + ' embedded).');

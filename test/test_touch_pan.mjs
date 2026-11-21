@@ -3,7 +3,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import puppeteer from '/tmp/pw/node_modules/puppeteer-core/lib/esm/puppeteer/puppeteer-core.js';
+import puppeteer from './lib/puppeteer.mjs';
 import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_DIST = path.join(ROOT, 'dist');

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import puppeteer from '/tmp/pw/node_modules/puppeteer-core/lib/esm/puppeteer/puppeteer-core.js';
+import puppeteer from './lib/puppeteer.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = path.join(ROOT, 'deploy-demo-family-tree');
@@ -31,6 +31,19 @@ function run(cmd, args, opts = {}) {
   assert(r.code !== 0 && /invalid email/i.test(r.stderr), 'rejects an invalid Super Admin email');
 }
 
+// --- setup: emails that could break out of the rules string ---
+for (const bad of ["x'||true||'@example.com", 'a\\b@example.com', 'owner@example', 'Owner <owner@example.com>', "o'neil@example.com"]) {
+  const r = await run('node', ['setup.mjs', '--project-id', 'demo-family-tree', '--super-admin', bad, '--firebase-config', CFG, '--out', path.join(ROOT, 'deploy-should-not-exist')]);
+  assert(r.code !== 0 && /invalid email/i.test(r.stderr), 'rejects unsafe Super Admin email ' + JSON.stringify(bad));
+}
+assert(!fs.existsSync(path.join(ROOT, 'deploy-should-not-exist')), 'rejected setups write nothing');
+
+// --- setup: invalid Firestore location (would be injected into firebase.json) ---
+{
+  const r = await run('node', ['setup.mjs', '--project-id', 'demo-family-tree', '--super-admin', 'owner@example.com', '--location', 'nam5","x":"y', '--firebase-config', CFG, '--out', path.join(ROOT, 'deploy-should-not-exist')]);
+  assert(r.code !== 0 && /firestore location/i.test(r.stderr), 'rejects an unsafe Firestore location');
+}
+
 // --- setup: invalid project id ---
 {
   const r = await run('node', ['setup.mjs', '--project-id', 'BAD_ID', '--super-admin', 'owner@example.com', '--firebase-config', CFG, '--out', path.join(ROOT, 'deploy-should-not-exist')]);
@@ -55,9 +68,12 @@ function run(cmd, args, opts = {}) {
   const adminHtml = fs.readFileSync(path.join(ROOT, 'dist/admin.html'), 'utf8');
   assert(treeHtml.includes('id="btn-theme-toggle"') && adminHtml.includes('id="btn-theme-toggle"'), 'tree and admin headers have the theme toggle');
   const sw = fs.readFileSync(path.join(ROOT, 'dist/sw.js'), 'utf8');
-  assert(sw.includes("CACHE_VERSION = 'osr-pwa-v5'"), 'service worker cache is osr-pwa-v5');
+  assert(sw.includes("CACHE_VERSION = 'osr-pwa-v6'"), 'service worker cache is osr-pwa-v6');
   assert(/\/assets\/app\.[A-Za-z0-9_-]+\.css/.test(sw), 'service worker precaches hashed CSS');
   assert(sw.includes('/theme-boot.js') && sw.includes('/404.html') && sw.includes('/'), 'service worker precaches boot, 404, and /');
+  assert(sw.includes("NEVER_CACHE_PATHS = ['/config.js', '/sw.js']") && sw.includes('isNeverCachePath(url)'), 'service worker never caches /config.js or sw.js');
+  const precacheBlock = (sw.match(/const PRECACHE_URLS = \[([\s\S]*?)\];/) || [])[1] || '';
+  assert(precacheBlock && !precacheBlock.includes("'/config.js'"), 'precache list does not include /config.js');
 }
 
 // --- generate ---
@@ -87,6 +103,8 @@ assert(!banned.some((w) => cfgJs.toLowerCase().includes(w)), 'generated config.j
 
 const rules = fs.readFileSync(path.join(OUT, 'firestore.rules'), 'utf8');
 assert(rules.includes("return 'owner@example.com';"), 'rules embed the Super Admin email');
+assert((rules.match(/'owner@example\.com'/g) || []).length === 1, 'Super Admin email appears exactly once as a rules string');
+assert(rules.includes('function revisionAdvances()') && rules.includes('adminEmails'), 'rules include the revision guard and adminEmails');
 assert(rules.includes('match /archives/familytree {') && rules.includes('match /archives/familytree_log {'), 'rules use the chosen archive IDs');
 assert(!rules.includes('__SUPER_ADMIN_EMAIL__') && !rules.includes('__ARCHIVE_ID__'), 'no unfilled placeholders in rules');
 
@@ -188,6 +206,33 @@ const admin = await loadPage('/admin.html', () => ({
 assert(admin.info.hasConfig && admin.info.superAdmin === 'owner@example.com', 'admin page loads OSR_CONFIG');
 assert((admin.info.name === 'Harbor Family') || admin.info.title.includes('Harbor Family'), 'admin page shows the site title');
 assert(admin.unexpected.length === 0, 'admin page has no unexpected console errors: ' + admin.unexpected.slice(0, 3).join(' | '));
+
+// --- service worker must not store /config.js (Hosting serves it no-store) ---
+{
+  const browser = await puppeteer.launch({ executablePath: '/usr/bin/google-chrome', headless: 'new', args: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'] });
+  const page = await browser.newPage();
+  await page.goto(origin + '/index.html', { waitUntil: 'domcontentloaded', timeout: 30000 });
+  const swInfo = await page.evaluate(async () => {
+    if (!('serviceWorker' in navigator)) return { supported: false };
+    await navigator.serviceWorker.register('/sw.js');
+    await navigator.serviceWorker.ready;
+    if (!navigator.serviceWorker.controller) {
+      await new Promise((r) => { navigator.serviceWorker.addEventListener('controllerchange', r, { once: true }); setTimeout(r, 4000); });
+    }
+    await fetch('/config.js?probe=1').catch(() => null);
+    await fetch('/config.js').catch(() => null);
+    await fetch('/theme-boot.js').catch(() => null);
+    await new Promise((r) => setTimeout(r, 500));
+    const names = await caches.keys();
+    const urls = [];
+    for (const n of names) { const c = await caches.open(n); (await c.keys()).forEach((q) => urls.push(new URL(q.url).pathname)); }
+    return { supported: true, controlled: !!navigator.serviceWorker.controller, names, urls };
+  });
+  await browser.close();
+  assert(swInfo.supported && swInfo.names.includes('osr-pwa-v6'), 'service worker installs cache osr-pwa-v6: ' + JSON.stringify(swInfo.names));
+  assert(swInfo.controlled, 'service worker controls the page');
+  assert(swInfo.urls.length > 0 && !swInfo.urls.includes('/config.js'), 'Cache Storage never holds /config.js (' + swInfo.urls.length + ' cached URLs)');
+}
 
 server.close();
 if (failed.length) {
