@@ -466,7 +466,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     let uiState = {
       viewMode: 'canvas',
       inspectorOpen: false,
-      inspectorTab: 'profile', // 'profile' | 'edit' | 'add' | 'evidence'
+      inspectorTab: 'profile', // 'profile' | 'edit' | 'add'
       accordions: {
         photos: false,
         bio: false,
@@ -3139,6 +3139,9 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         return;
       }
 
+      // Evidence & Citations UI is hidden; assertions on the person record are kept.
+      if (uiState.inspectorTab === 'evidence') uiState.inspectorTab = 'profile';
+
       updateCircleActionActiveState();
 
       const avatarWrap = document.getElementById('inspector-avatar-wrap');
@@ -3735,73 +3738,6 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         return;
       }
 
-      // -------------------------------------------------------------------
-      // VIEW 4: EVIDENCE & CITATIONS (opened from the profile More menu)
-      // -------------------------------------------------------------------
-      const assertions = person.assertions || [];
-      body.innerHTML = `
-        <div class="p-4 space-y-3">
-          <div class="flex items-center justify-between">
-            <span class="text-[11px] font-bold uppercase tracking-wider text-slate-600">Research Claims &amp; Citations (${assertions.length})</span>
-            <div class="flex items-center gap-2">
-              ${editable ? `<button type="button" id="btn-toggle-add-assertion" class="text-xs font-semibold text-orange-700 hover:text-orange-900">+ Add Claim</button>` : ''}
-              <button type="button" id="btn-back-to-profile-sheet" class="text-xs font-semibold text-archival-indigo hover:underline">← Profile</button>
-            </div>
-          </div>
-
-          ${uiState.showAssertionAddForm && editable ? `
-            <form id="form-add-assertion" class="p-3 rounded-xl bg-amber-50/70 border border-amber-200 space-y-2">
-              <div class="grid grid-cols-2 gap-2">
-                <select name="factType" class="px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
-                  <option value="BIRT">Birth Claim</option>
-                  <option value="DEAT">Death Claim</option>
-                  <option value="MARR">Marriage Claim</option>
-                  <option value="RESI">Residence Claim</option>
-                  <option value="EVEN">General Fact</option>
-                </select>
-                <select name="status" class="px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
-                  <option value="accepted">Accepted</option>
-                  <option value="competing">Competing / Unverified</option>
-                </select>
-              </div>
-              <input name="value" required type="text" placeholder="Claimed Date & Place (e.g., July 4 1977 · Springfield)" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg" />
-              <div class="grid grid-cols-2 gap-2">
-                <input name="sourceTitle" required type="text" placeholder="Source Title (e.g., Civil Registry)" class="px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg" />
-                <input name="locator" type="text" placeholder="Page / Folio / Certificate #" class="px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg" />
-              </div>
-              <textarea name="transcription" rows="2" placeholder="Verbatim source extract or notes..." class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg"></textarea>
-              <div class="flex justify-end gap-1.5">
-                <button type="button" id="btn-cancel-assertion-form" class="px-2.5 py-1 text-xs text-slate-600">Cancel</button>
-                <button type="submit" class="px-3 py-1 rounded-lg bg-archival-indigo text-white text-xs font-semibold">Save Citation</button>
-              </div>
-            </form>
-          ` : ''}
-
-          ${assertions.length === 0 ? `
-            <p class="text-xs text-stone-500 italic py-2">No source citations or competing research claims attached to this individual yet.</p>
-          ` : assertions.map(a => {
-            const isAcc = a.status === 'accepted';
-            return `
-              <div class="p-3 rounded-xl border ${isAcc ? 'border-emerald-300 bg-emerald-50/40' : 'border-amber-300 bg-amber-50/40'} space-y-1.5 text-xs">
-                <div class="flex items-center justify-between gap-2">
-                  <span class="font-bold text-slate-900">${escapeHtml(a.factType || 'FACT')}: ${escapeHtml(a.value || '')}</span>
-                  <span class="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${isAcc ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-900'}">${isAcc ? 'Accepted' : 'Competing'}</span>
-                </div>
-                <div class="text-[11px] text-slate-700">
-                  <strong>Source:</strong> ${escapeHtml(a.sourceTitle || 'Archival Record')} ${a.locator ? `· <span>${escapeHtml(a.locator)}</span>` : ''}
-                </div>
-                ${a.transcription ? `<div class="text-[11px] italic text-slate-600 bg-white/80 p-2 rounded-lg border border-stone-200">"${escapeHtml(a.transcription)}"</div>` : ''}
-                ${editable ? `
-                  <div class="flex items-center justify-end gap-2 pt-1">
-                    ${!isAcc ? `<button type="button" data-accept-assertion="${escapeAttr(a.id)}" class="text-[11px] font-semibold text-emerald-800 hover:underline">✓ Mark Accepted</button>` : ''}
-                    <button type="button" data-delete-assertion="${escapeAttr(a.id)}" class="text-[11px] text-rose-700 hover:underline">Delete</button>
-                  </div>
-                ` : ''}
-              </div>
-            `;
-          }).join('')}
-        </div>
-      `;
     }
 
     /* =====================================================================
@@ -4557,11 +4493,6 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           showToast('No direct lineage path found between these two individuals.');
         }
       });
-      document.getElementById('btn-open-evidence-menu')?.addEventListener('click', () => {
-        document.getElementById('insp-more-menu').classList.add('hidden');
-        uiState.inspectorTab = 'evidence';
-        renderAll();
-      });
       document.getElementById('btn-delete-person')?.addEventListener('click', () => {
         document.getElementById('insp-more-menu').classList.add('hidden');
         const pid = appState.selectedPersonId;
@@ -5044,42 +4975,6 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           return;
         }
 
-        // Evidence & Citations actions
-        if (e.target.id === 'btn-back-to-profile-sheet') {
-          uiState.inspectorTab = 'profile';
-          renderAll();
-          return;
-        }
-        if (e.target.id === 'btn-toggle-add-assertion') {
-          uiState.showAssertionAddForm = !uiState.showAssertionAddForm;
-          renderAll();
-          return;
-        }
-        if (e.target.id === 'btn-cancel-assertion-form') {
-          uiState.showAssertionAddForm = false;
-          renderAll();
-          return;
-        }
-        const acceptAsrtBtn = e.target.closest('[data-accept-assertion]');
-        if (acceptAsrtBtn) {
-          const asrtId = acceptAsrtBtn.dataset.acceptAssertion;
-          commitMutation('Marked research claim as Accepted', s => {
-            const p = s.persons[s.selectedPersonId];
-            const item = (p?.assertions || []).find(a => a.id === asrtId);
-            if (item) item.status = 'accepted';
-          }, 'Evidence');
-          return;
-        }
-        const delAsrtBtn = e.target.closest('[data-delete-assertion]');
-        if (delAsrtBtn) {
-          const asrtId = delAsrtBtn.dataset.deleteAssertion;
-          commitMutation('Deleted research citation', s => {
-            const p = s.persons[s.selectedPersonId];
-            if (p) p.assertions = (p.assertions || []).filter(a => a.id !== asrtId);
-          }, 'Evidence');
-          return;
-        }
-
       });
 
       // Delegated Form Submissions & Dynamic Select Changes
@@ -5341,35 +5236,6 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           return;
         }
 
-        if (e.target.id === 'form-add-assertion') {
-          e.preventDefault();
-          const fd = new FormData(e.target);
-          const factType = fd.get('factType') || 'EVEN';
-          const status = fd.get('status') === 'competing' ? 'competing' : 'accepted';
-          const value = (fd.get('value') || '').trim();
-          const sourceTitle = (fd.get('sourceTitle') || '').trim();
-          const locator = (fd.get('locator') || '').trim();
-          const transcription = (fd.get('transcription') || '').trim();
-          if (!value || !sourceTitle) return;
-
-          commitMutation(`Added ${status} citation for ${factType}`, s => {
-            const p = s.persons[s.selectedPersonId];
-            if (!p) return;
-            p.assertions = p.assertions || [];
-            p.assertions.push({
-              id: generateId('as'),
-              factType,
-              status,
-              value,
-              sourceTitle,
-              locator,
-              transcription
-            });
-          }, 'Evidence');
-          uiState.showAssertionAddForm = false;
-          renderAll();
-          return;
-        }
       });
 
       let resizeTimer = null;

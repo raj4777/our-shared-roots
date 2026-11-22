@@ -1,8 +1,10 @@
 // Startup must survive a page whose HTML lacks an optional menu button.
 // On 2026-11-22 an outside edit removed the "Evidence & Citations" button
 // (#btn-open-evidence-menu) from index.html; initEvents() then threw a
-// TypeError and every listener after it was never wired. This serves the
-// built page with that button stripped and checks startup still finishes.
+// TypeError and every listener after it was never wired. That button is now
+// intentionally gone, so this serves the built page with another optional
+// ⋯ menu button (#btn-trace-to-central) stripped and checks startup still
+// finishes.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -13,7 +15,7 @@ const PROD_DIST = path.join(ROOT, 'dist');
 const DIST = path.join(ROOT, 'dist-test'); // test build: has the window.__TREE hook
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.png': 'image/png' };
-const BUTTON_RE = /\s*<button id="btn-open-evidence-menu"[\s\S]*?<\/button>/;
+const BUTTON_RE = /\s*<button id="btn-trace-to-central"[\s\S]*?<\/button>/;
 const failed = [];
 function assert(cond, msg) {
   if (!cond) { failed.push(msg); console.log('  FAIL  ' + msg); }
@@ -35,7 +37,8 @@ function serve(root) {
 }
 
 const original = fs.readFileSync(path.join(PROD_DIST, 'index.html'), 'utf8');
-assert(BUTTON_RE.test(original), 'built index.html has the Evidence & Citations button (so stripping it is meaningful)');
+assert(BUTTON_RE.test(original), 'built index.html has the Show Path to Central Person button (so stripping it is meaningful)');
+assert(!/id="btn-open-evidence-menu"/.test(original), 'built index.html no longer includes the Evidence & Citations button');
 
 const browser = await puppeteer.launch({ executablePath: '/usr/bin/google-chrome', headless: 'new', args: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'] });
 try {
@@ -52,12 +55,14 @@ try {
     await p.goto(`http://127.0.0.1:${PORT}/index.html`, { waitUntil: 'networkidle2', timeout: 30000 });
     await new Promise((r) => setTimeout(r, 1000));
     const info = await p.evaluate(() => ({
-      button: !!document.getElementById('btn-open-evidence-menu'),
+      button: !!document.getElementById('btn-trace-to-central'),
+      evidenceBtn: !!document.getElementById('btn-open-evidence-menu'),
       deleteBtn: !!document.getElementById('btn-delete-person'),
       hooks: typeof window.__TREE,
       text: document.body.innerText
     }));
-    assert(!info.button, `${label}: page served without the button`);
+    assert(!info.button, `${label}: page served without the optional Trace button`);
+    assert(!info.evidenceBtn, `${label}: Evidence & Citations button is absent`);
     assert(info.deleteBtn, `${label}: neighbouring Remove button still present`);
     assert(errors.length === 0, `${label}: starts without uncaught errors ${errors.join(' | ')}`);
     assert(info.text.includes('Sign in'), `${label}: renders the sign-in screen`);
@@ -73,4 +78,4 @@ try {
   await browser.close();
 }
 if (failed.length) { console.log('FAILED ' + failed.length); process.exit(1); }
-console.log('PASS page starts with the Evidence & Citations button missing');
+console.log('PASS page starts with an optional More-menu button missing');
