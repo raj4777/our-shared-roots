@@ -7,7 +7,7 @@
     "build": "vite build && node scripts/postbuild.mjs",
     "build:test": "vite build --mode test && node scripts/postbuild.mjs dist-test",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "npm run build && npm run build:test && node test/test_no_test_hooks.mjs && node test/test_setup_and_pages.mjs && node test/test_touch_pan.mjs && node test/test_security_acl.mjs",
+    "test": "npm run build && npm run build:test && node test/test_no_test_hooks.mjs && node test/test_setup_and_pages.mjs && node test/test_touch_pan.mjs && node test/test_missing_menu_button.mjs && node test/test_security_acl.mjs",
     "test:rules": "cd rules-test && npm install --no-audit --no-fund && npx firebase emulators:exec --only firestore --project demo-family-tree \"node test.mjs\""
   },
   "devDependencies": {

@@ -4377,15 +4377,15 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         document.getElementById('modal-google-auth').classList.remove('hidden');
       }
 
-      document.getElementById('btn-google-account').addEventListener('click', openGoogleAuthModal);
-      document.getElementById('btn-banner-signin').addEventListener('click', openGoogleAuthModal);
-      document.getElementById('btn-unauth-signin').addEventListener('click', () => signInWithGooglePopup(false));
-      document.getElementById('btn-unauth-redirect').addEventListener('click', signInWithGoogleRedirectFlow);
-      document.getElementById('btn-trigger-google-oauth').addEventListener('click', () => {
+      document.getElementById('btn-google-account')?.addEventListener('click', openGoogleAuthModal);
+      document.getElementById('btn-banner-signin')?.addEventListener('click', openGoogleAuthModal);
+      document.getElementById('btn-unauth-signin')?.addEventListener('click', () => signInWithGooglePopup(false));
+      document.getElementById('btn-unauth-redirect')?.addEventListener('click', signInWithGoogleRedirectFlow);
+      document.getElementById('btn-trigger-google-oauth')?.addEventListener('click', () => {
         signInWithGooglePopup(Boolean(getActiveUserEmail()));
       });
-      document.getElementById('btn-trigger-google-redirect').addEventListener('click', signInWithGoogleRedirectFlow);
-      document.getElementById('btn-google-signout').addEventListener('click', signOutGoogleUser);
+      document.getElementById('btn-trigger-google-redirect')?.addEventListener('click', signInWithGoogleRedirectFlow);
+      document.getElementById('btn-google-signout')?.addEventListener('click', signOutGoogleUser);
 
       if (authChannel) {
         authChannel.onmessage = () => {
@@ -4398,18 +4398,18 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       }
 
       // View Switcher
-      document.getElementById('btn-view-canvas').addEventListener('click', () => {
+      document.getElementById('btn-view-canvas')?.addEventListener('click', () => {
         uiState.viewMode = 'canvas';
         renderAll();
       });
-      document.getElementById('btn-view-list').addEventListener('click', () => {
+      document.getElementById('btn-view-list')?.addEventListener('click', () => {
         uiState.viewMode = 'list';
         renderAll();
       });
 
       // Undo / Redo
-      document.getElementById('btn-undo').addEventListener('click', undo);
-      document.getElementById('btn-redo').addEventListener('click', redo);
+      document.getElementById('btn-undo')?.addEventListener('click', undo);
+      document.getElementById('btn-redo')?.addEventListener('click', redo);
       document.addEventListener('keydown', e => {
         if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target?.tagName)) return;
         if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
@@ -4430,7 +4430,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       genToggle.addEventListener('click', () => {
         genPopover.classList.toggle('hidden');
       });
-      document.getElementById('btn-close-gen-depth').addEventListener('click', () => {
+      document.getElementById('btn-close-gen-depth')?.addEventListener('click', () => {
         genPopover.classList.add('hidden');
         genToggle.focus();
       });
@@ -4441,7 +4441,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           fitTreeToScreen();
         });
       });
-      document.getElementById('btn-center-on-main').addEventListener('click', () => {
+      document.getElementById('btn-center-on-main')?.addEventListener('click', () => {
         const mainId = resolveCentralPersonIdForUser() || appState.centralPersonId;
         if (mainId && uiState.focusMode) setFocusPerson(mainId);
         else if (mainId) centerOnPerson(mainId, true);
@@ -4449,7 +4449,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       });
 
       // Rename Tree Dialog
-      document.getElementById('btn-rename-tree').addEventListener('click', () => {
+      document.getElementById('btn-rename-tree')?.addEventListener('click', () => {
         if (!canEditTree()) return;
         if (!canAccessAdminPanel()) {
           showToast('Only an Admin or the Super Admin can rename the tree.');
@@ -4460,16 +4460,16 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         document.getElementById('modal-dialog').classList.remove('hidden');
         setTimeout(() => { dlgInput.focus(); dlgInput.select(); }, 0);
       });
-      document.getElementById('dialog-input').addEventListener('keydown', e => {
+      document.getElementById('dialog-input')?.addEventListener('keydown', e => {
         if (e.key === 'Enter') {
           e.preventDefault();
           document.getElementById('dialog-confirm').click();
         }
       });
-      document.getElementById('dialog-cancel').addEventListener('click', () => {
+      document.getElementById('dialog-cancel')?.addEventListener('click', () => {
         document.getElementById('modal-dialog').classList.add('hidden');
       });
-      document.getElementById('dialog-confirm').addEventListener('click', () => {
+      document.getElementById('dialog-confirm')?.addEventListener('click', () => {
         const val = document.getElementById('dialog-input').value.trim();
         if (val && val !== appState.tree.title) {
           commitMutation(`Renamed tree to "${val}"`, s => { s.tree.title = val; });
@@ -4478,7 +4478,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       });
 
       // Empty Tree Add First Person
-      document.getElementById('btn-empty-add-first').addEventListener('click', () => {
+      document.getElementById('btn-empty-add-first')?.addEventListener('click', () => {
         if (!canEditTree()) return;
         const newId = generateId('p');
         const activeEmail = getActiveUserEmail();
@@ -4506,34 +4506,34 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       });
 
       // Inspector Drawer Controls
-      document.getElementById('btn-toggle-inspector').addEventListener('click', () => {
+      document.getElementById('btn-toggle-inspector')?.addEventListener('click', () => {
         if (uiState.inspectorOpen) closeInspector();
         else openInspector(appState.selectedPersonId || appState.centralPersonId, 'profile');
       });
-      document.getElementById('btn-close-inspector').addEventListener('click', closeInspector);
-      document.getElementById('btn-insp-circle-profile').addEventListener('click', () => {
+      document.getElementById('btn-close-inspector')?.addEventListener('click', closeInspector);
+      document.getElementById('btn-insp-circle-profile')?.addEventListener('click', () => {
         uiState.inspectorTab = 'profile';
         renderAll();
       });
-      document.getElementById('btn-insp-circle-edit').addEventListener('click', () => {
+      document.getElementById('btn-insp-circle-edit')?.addEventListener('click', () => {
         uiState.inspectorTab = 'edit';
         renderAll();
       });
-      document.getElementById('btn-insp-circle-add').addEventListener('click', () => {
+      document.getElementById('btn-insp-circle-add')?.addEventListener('click', () => {
         uiState.inspectorTab = 'add';
         renderAll();
       });
-      document.getElementById('btn-avatar-camera').addEventListener('click', () => {
+      document.getElementById('btn-avatar-camera')?.addEventListener('click', () => {
         uiState.inspectorTab = 'profile';
         uiState.accordions.photos = true;
         uiState.showPhotoAddForm = true;
         renderAll();
       });
-      document.getElementById('btn-insp-circle-more').addEventListener('click', e => {
+      document.getElementById('btn-insp-circle-more')?.addEventListener('click', e => {
         e.stopPropagation();
         document.getElementById('insp-more-menu').classList.toggle('hidden');
       });
-      document.getElementById('btn-set-as-central').addEventListener('click', () => {
+      document.getElementById('btn-set-as-central')?.addEventListener('click', () => {
         const pid = appState.selectedPersonId;
         if (pid && appState.persons[pid]) {
           appState.centralPersonId = pid;
@@ -4543,7 +4543,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           showToast(`Centered tree on ${getDisplayName(appState.persons[pid])}`);
         }
       });
-      document.getElementById('btn-trace-to-central').addEventListener('click', () => {
+      document.getElementById('btn-trace-to-central')?.addEventListener('click', () => {
         document.getElementById('insp-more-menu').classList.add('hidden');
         const fromId = appState.centralPersonId;
         const toId = appState.selectedPersonId;
@@ -4557,12 +4557,12 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           showToast('No direct lineage path found between these two individuals.');
         }
       });
-      document.getElementById('btn-open-evidence-menu').addEventListener('click', () => {
+      document.getElementById('btn-open-evidence-menu')?.addEventListener('click', () => {
         document.getElementById('insp-more-menu').classList.add('hidden');
         uiState.inspectorTab = 'evidence';
         renderAll();
       });
-      document.getElementById('btn-delete-person').addEventListener('click', () => {
+      document.getElementById('btn-delete-person')?.addEventListener('click', () => {
         document.getElementById('insp-more-menu').classList.add('hidden');
         const pid = appState.selectedPersonId;
         const person = appState.persons[pid];
@@ -4587,7 +4587,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       });
 
       // Kinship Modal
-      document.getElementById('btn-open-kinship').addEventListener('click', () => {
+      document.getElementById('btn-open-kinship')?.addEventListener('click', () => {
         const persons = Object.values(appState.persons);
         if (persons.length < 2) {
           showToast('Add at least two people to compute kinship.');
@@ -4624,9 +4624,9 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         `;
       }
 
-      document.getElementById('kinship-from-select').addEventListener('change', updateKinshipModalPreview);
-      document.getElementById('kinship-to-select').addEventListener('change', updateKinshipModalPreview);
-      document.getElementById('btn-highlight-kinship').addEventListener('click', () => {
+      document.getElementById('kinship-from-select')?.addEventListener('change', updateKinshipModalPreview);
+      document.getElementById('kinship-to-select')?.addEventListener('change', updateKinshipModalPreview);
+      document.getElementById('btn-highlight-kinship')?.addEventListener('click', () => {
         const fromId = document.getElementById('kinship-from-select').value;
         const toId = document.getElementById('kinship-to-select').value;
         const res = computeKinship(fromId, toId);
@@ -4638,7 +4638,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           renderAll();
         }
       });
-      document.getElementById('btn-clear-kinship').addEventListener('click', () => {
+      document.getElementById('btn-clear-kinship')?.addEventListener('click', () => {
         uiState.highlightedKinship = null;
         document.getElementById('kinship-banner').classList.add('hidden');
         renderAll();
@@ -4659,7 +4659,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         e.stopPropagation();
         setMobileSearchOpen(!searchWrapEl.classList.contains('search-open'), false);
       });
-      document.getElementById('search-input').addEventListener('keydown', (e) => {
+      document.getElementById('search-input')?.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && searchWrapEl.classList.contains('search-open')) {
           e.preventDefault();
           e.stopPropagation();
@@ -4820,14 +4820,14 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         applyCanvasTransform();
       }, { passive: false });
 
-      document.getElementById('btn-zoom-in').addEventListener('click', () => zoomAroundCentre(1.15));
-      document.getElementById('btn-zoom-out').addEventListener('click', () => zoomAroundCentre(0.87));
-      document.getElementById('btn-zoom-reset').addEventListener('click', () => {
+      document.getElementById('btn-zoom-in')?.addEventListener('click', () => zoomAroundCentre(1.15));
+      document.getElementById('btn-zoom-out')?.addEventListener('click', () => zoomAroundCentre(0.87));
+      document.getElementById('btn-zoom-reset')?.addEventListener('click', () => {
         const rect = viewport.getBoundingClientRect();
         zoomAt(rect.width / 2, rect.height / 2, 1);
       });
-      document.getElementById('btn-fit-screen').addEventListener('click', fitTreeToScreen);
-      document.getElementById('btn-toggle-full-tree').addEventListener('click', () => setFullTreeMode(uiState.focusMode));
+      document.getElementById('btn-fit-screen')?.addEventListener('click', fitTreeToScreen);
+      document.getElementById('btn-toggle-full-tree')?.addEventListener('click', () => setFullTreeMode(uiState.focusMode));
       const openPrint = () => openPrintTreeDialog();
       document.getElementById('btn-print-tree')?.addEventListener('click', openPrint);
       document.getElementById('btn-print-tree-menu')?.addEventListener('click', openPrint);
