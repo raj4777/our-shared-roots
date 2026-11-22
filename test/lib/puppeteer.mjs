@@ -67,11 +67,28 @@ export function resolveChrome(requested) {
 
 const real = await loadPuppeteer();
 
+// Headless Chrome inherits the device's light/dark setting (macOS in Dark Mode
+// reports prefers-color-scheme: dark), and theme-boot.js follows it. Pin a light
+// color scheme on every new page so results do not depend on the machine.
+// OSR_TEST_COLOR_SCHEME=dark forces dark; =device leaves the device setting.
+// A test can still call page.emulateMediaFeatures() itself to override this.
+const COLOR_SCHEME = (process.env.OSR_TEST_COLOR_SCHEME || 'light').toLowerCase();
+
+async function pinColorScheme(page) {
+  if (COLOR_SCHEME === 'device' || COLOR_SCHEME === 'system') return page;
+  const value = COLOR_SCHEME === 'dark' ? 'dark' : 'light';
+  await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value }]);
+  return page;
+}
+
 export default {
-  launch(options = {}) {
+  async launch(options = {}) {
     // Newer puppeteer-core only accepts headless true/false/'shell';
     // older tests pass 'new', which meant the same as true.
     const headless = options.headless === 'new' ? true : options.headless;
-    return real.launch({ ...options, headless, executablePath: resolveChrome(options.executablePath) });
+    const browser = await real.launch({ ...options, headless, executablePath: resolveChrome(options.executablePath) });
+    const newPage = browser.newPage.bind(browser);
+    browser.newPage = async (...args) => pinColorScheme(await newPage(...args));
+    return browser;
   }
 };
