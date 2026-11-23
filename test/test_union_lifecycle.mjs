@@ -47,6 +47,7 @@ function fixture() {
     g1: person('g1', 'Gus', 'Example', 'M', [{ id: 'b7', type: 'BIRT', date: '1965' }]),
     g2: person('g2', 'Hana', 'Example', 'F', [{ id: 'b8', type: 'BIRT', date: '1966' }, { id: 'd8', type: 'DEAT', date: '2020' }])
   };
+    persons.a1.nickname = 'Annie';
   const child = (id) => ({ personId: id, linkage: 'biological' });
   const families = {
     fp: { id: 'fp', partner1Id: 'pat', partner2Id: 'quin', status: 'married', marriageDate: '1964', marriagePlace: '', children: [child('a1'), child('c1'), child('e1'), child('g1')] },
@@ -235,7 +236,9 @@ const ged = await page.evaluate((state) => {
   const divCount = (text.match(/^1 DIV Y$/gm) || []).length;
   const seprCount = (text.match(/^1 _SEPR Y$/gm) || []).length;
   const widoCount = (text.match(/^1 _WIDO Y$/gm) || []).length;
-  return { text, byPair, divCount, seprCount, widoCount, familyCount: parsed.familyCount };
+  const nickLine = /^2 NICK Annie$/m.test(text);
+  const ann = Object.values(parsed.persons || {}).find(p => p.given === 'Ann');
+  return { text, byPair, divCount, seprCount, widoCount, familyCount: parsed.familyCount, nickLine, annNick: ann && ann.nickname };
 }, fixture());
 
 assert(ged.divCount === 1 && ged.seprCount === 1 && ged.widoCount === 1, 'export writes one DIV, one _SEPR, and one _WIDO (' + [ged.divCount, ged.seprCount, ged.widoCount].join(',') + ')');
@@ -244,6 +247,7 @@ assert(ged.byPair['Ann+Ben']?.status === 'married' && ged.byPair['Ann+Ben']?.mar
 assert(ged.byPair['Cara+Dan']?.status === 'divorced' && ged.byPair['Cara+Dan']?.divorceDate === '10 Mar 2005' && ged.byPair['Cara+Dan']?.divorcePlace === 'Testville', 'divorced date/place round-trip: ' + JSON.stringify(ged.byPair['Cara+Dan']));
 assert(ged.byPair['Eve+Finn']?.status === 'separated' && ged.byPair['Eve+Finn']?.divorceDate === 'BEF 2010' && ged.byPair['Eve+Finn']?.divorcePlace === 'Oak Place', 'separated _SEPR date/place round-trip: ' + JSON.stringify(ged.byPair['Eve+Finn']));
 assert(ged.byPair['Gus+Hana']?.status === 'widowed', 'widowed _WIDO round-trips: ' + JSON.stringify(ged.byPair['Gus+Hana']));
+assert(ged.nickLine && ged.annNick === 'Annie', 'GEDCOM exports and imports 2 NICK for Ann (' + ged.annNick + ')');
 
 assert(errs.length === 0, 'no page errors (' + errs.join(' | ') + ')');
 

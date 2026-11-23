@@ -27,13 +27,15 @@ const html = fs.readFileSync(path.join(ROOT, 'src/index.html'), 'utf8') + '\n' +
 assert(html.includes('id="modal-quick-edit"') && html.includes('openQuickEditModal'), 'Quick Edit modal and opener exist');
 assert(html.includes('Exactly') && html.includes('Before') && html.includes('After') && html.includes('Circa') && html.includes('Unsure') && html.includes('Between') && html.includes('Free text'), 'date qualifier options are present');
 assert(html.includes('Invite to join site') && html.includes('Edit more'), 'invite and Edit more are present');
+assert(html.indexOf('id="qe-prefix"') > -1 && html.indexOf('id="qe-prefix"') < html.indexOf('id="qe-given"') && html.indexOf('id="qe-suffix"') < html.indexOf('id="qe-given"'), 'Prefix and Suffix sit above First name / Last name in Quick Edit');
+assert(html.includes('id="qe-nickname"') && html.includes('for="qe-nickname">Nickname'), 'Quick Edit has a Nickname field');
 assert(!/value=[\"']partner[\"']/.test(html) && !html.includes('Your wife') && !html.includes('WIFE:'), 'no partner status or gendered spouse labels');
 
 const fixture = {
   tree: { title: 'Quick Edit demo', id: 'demo', revision: 1 },
   persons: {
     p1: {
-      id: 'p1', given: 'Alice', surname: 'Example', prefix: 'Dr.', sex: 'F', livingStatus: 'living',
+      id: 'p1', given: 'Alice', surname: 'Example', prefix: 'Dr.', nickname: 'Allie', sex: 'F', livingStatus: 'living',
       emails: ['alice.example@example.com'],
       events: [{ id: 'evb1', type: 'BIRT', date: '4 Jul 1977', place: 'Testville' }]
     },
@@ -115,6 +117,12 @@ const ui = await page.evaluate((state) => {
   const given = document.getElementById('qe-given')?.value;
   const surname = document.getElementById('qe-surname')?.value;
   const prefix = document.getElementById('qe-prefix')?.value;
+  const nickname = document.getElementById('qe-nickname')?.value;
+  const inspNick = document.getElementById('inspector-person-nickname');
+  const inspCs = inspNick ? getComputedStyle(inspNick) : null;
+  const cardNick = document.querySelector('[data-person-card="p1"] .card-nickname');
+  const cardCs = cardNick ? getComputedStyle(cardNick) : null;
+  const cardText = document.querySelector('[data-person-card="p1"]')?.innerText || '';
   const sex = document.querySelector('#form-quick-edit input[name="qeSex"]:checked')?.value;
   const living = document.querySelector('#form-quick-edit input[name="qeLiving"]:checked')?.value;
   const birthMode = document.querySelector('[data-qe-date="birth"] [data-qe-mode]')?.value;
@@ -132,13 +140,18 @@ const ui = await page.evaluate((state) => {
   const title = document.getElementById('qe-title')?.textContent;
   return {
     open: modal && !modal.classList.contains('hidden'),
-    given, surname, prefix, sex, living, birthMode, birthYear, place, email,
+    given, surname, prefix, nickname, inspNick: inspNick?.textContent, inspNickHidden: inspNick?.classList.contains('hidden'), inspItalic: inspCs?.fontStyle, inspWeight: inspCs?.fontWeight, cardNick: cardNick?.textContent, cardItalic: cardCs?.fontStyle, cardWeight: cardCs?.fontWeight, cardText, sex, living, birthMode, birthYear, place, email,
     andHidden, deathHidden, spouseHead, statusOpts, panchang, panchangBtn, title
   };
 }, fixture);
 
 assert(ui.open && ui.title === 'Edit profile', 'modal opens as Edit profile');
 assert(ui.given === 'Alice' && ui.surname === 'Example' && ui.prefix === 'Dr.', 'name and prefix fill from the person');
+assert(ui.nickname === 'Allie', 'nickname fills from the person');
+assert(ui.inspNick === '"Allie"' && ui.inspNickHidden === false, 'inspector shows the nickname in quotes under the name (' + ui.inspNick + ')');
+assert(ui.inspItalic === 'italic' && (ui.inspWeight === 'normal' || ui.inspWeight === '400'), 'inspector nickname is italic and not bold (' + ui.inspItalic + '/' + ui.inspWeight + ')');
+assert(ui.cardNick === '"Allie"', 'tree card shows the nickname in quotes (' + ui.cardNick + ')');
+assert(ui.cardItalic === 'italic' && (ui.cardWeight === 'normal' || ui.cardWeight === '400'), 'tree-card nickname is italic and not bold (' + ui.cardItalic + '/' + ui.cardWeight + ')');
 assert(ui.sex === 'F' && ui.living === 'living', 'existing sex and living radios are filled');
 assert(ui.birthMode === 'exact' && String(ui.birthYear) === '1977' && ui.place === 'Testville', 'birth date and place fill');
 assert(ui.email === 'alice.example@example.com', 'living people show the existing email');
@@ -152,6 +165,10 @@ const shot1440 = path.join(OUT, 'quickedit-1440.png');
 await page.screenshot({ path: shot1440, fullPage: false });
 keepScreenshot(shot1440, 'quickedit-1440.png');
 console.log('  wrote ' + shot1440);
+const shot3g = path.join(OUT, 'phase3g-quickedit.png');
+await page.screenshot({ path: shot3g, fullPage: false });
+keepScreenshot(shot3g, 'phase3g-quickedit.png');
+console.log('  wrote ' + shot3g);
 
 const betweenUi = await page.evaluate(() => {
   const mode = document.querySelector('[data-qe-date="birth"] [data-qe-mode]');
@@ -176,6 +193,7 @@ const saved = await page.evaluate(() => {
   const T = window.__TREE;
   const given = document.getElementById('qe-given');
   given.value = 'Alicia';
+  document.getElementById('qe-nickname').value = 'Ally';
   const year2 = document.querySelector('[data-qe-date="birth"] [data-qe-end-year]');
   year2.value = '1978';
   const startQ = document.querySelector('[data-qe-date="birth"] [data-qe-start-q]');
@@ -183,29 +201,36 @@ const saved = await page.evaluate(() => {
   document.getElementById('form-quick-edit').requestSubmit();
   const p = T.getState().persons.p1;
   const birt = (p.events || []).find(e => e.type === 'BIRT');
-  const beforeUndo = { given: p.given, date: birt?.date };
+  const beforeUndo = { given: p.given, nickname: p.nickname, date: birt?.date };
   T.undo();
   const p2 = T.getState().persons.p1;
   const birt2 = (p2.events || []).find(e => e.type === 'BIRT');
-  return { beforeUndo, afterUndo: { given: p2.given, date: birt2?.date }, modalClosed: document.getElementById('modal-quick-edit').classList.contains('hidden') };
+  return { beforeUndo, afterUndo: { given: p2.given, nickname: p2.nickname, date: birt2?.date }, modalClosed: document.getElementById('modal-quick-edit').classList.contains('hidden') };
 });
 assert(saved.modalClosed, 'OK closes the modal');
 assert(saved.beforeUndo.given === 'Alicia' && /^BET /.test(saved.beforeUndo.date) && /1978/.test(saved.beforeUndo.date), 'OK saves name and Between date atomically (' + saved.beforeUndo.date + ')');
+assert(saved.beforeUndo.nickname === 'Ally', 'OK saves the nickname');
 assert(saved.afterUndo.given === 'Alice' && saved.afterUndo.date === '4 Jul 1977', 'undo restores name and date together');
+assert(saved.afterUndo.nickname === 'Allie', 'undo restores the nickname');
 
 const more = await page.evaluate(() => {
   const T = window.__TREE;
   T.openQuickEditModal('p1');
   document.getElementById('btn-qe-more').click();
   const ui = T.getUi();
+  const form = document.getElementById('form-edit-person-profile');
+  const nick = form && form.querySelector('[name="nickname"]');
   return {
     modalClosed: document.getElementById('modal-quick-edit').classList.contains('hidden'),
     inspectorOpen: ui.inspectorOpen,
     tab: ui.inspectorTab,
-    hasForm: !!document.getElementById('form-edit-person-profile')
+    hasForm: !!form,
+    nickValue: nick && nick.value,
+    givenBeforeNick: !!(form && form.innerHTML.indexOf('Given Name') < form.innerHTML.indexOf('Nickname'))
   };
 });
 assert(more.modalClosed && more.inspectorOpen && more.tab === 'edit' && more.hasForm, 'Edit more closes the modal and opens the detailed Inspector edit form');
+assert(more.nickValue === 'Allie' && more.givenBeforeNick, 'detailed form has Nickname after Given Name / Surname (value=' + more.nickValue + ')');
 
 await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
 const mobile = await page.evaluate(() => {
@@ -251,6 +276,113 @@ const lock = await page.evaluate(() => {
   return calls.slice();
 });
 assert(lock.includes('acquire:p1'), 'opening Quick Edit calls the edit-lock acquire helper (' + lock.join(',') + ')');
+
+await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+const cardShotPrep = await page.evaluate(() => {
+  const T = window.__TREE;
+  T.closeQuickEditModal?.();
+  document.getElementById('btn-close-inspector')?.click();
+  document.getElementById('toast-banner')?.classList.add('hidden');
+  T.fitTreeToScreen?.();
+});
+await new Promise(r => setTimeout(r, 200));
+const shotCards = path.join(OUT, 'phase3g-cards.png');
+await page.screenshot({ path: shotCards, fullPage: false });
+keepScreenshot(shotCards, 'phase3g-cards.png');
+console.log('  wrote ' + shotCards);
+
+
+const inviteBuilt = await page.evaluate(() => {
+  const T = window.__TREE;
+  const msg = T.buildTreeInviteMessage({
+    siteTitle: 'Demo Tree',
+    inviteeFirstName: 'Alice',
+    inviterName: 'Sam Example',
+    appUrl: 'http://127.0.0.1:1234'
+  });
+  const url = T.buildGmailComposeUrl('alice.example@example.com', msg.subject, msg.body);
+  const parsed = new URL(url);
+  return {
+    subject: msg.subject,
+    body: msg.body,
+    href: url,
+    host: parsed.hostname + parsed.pathname,
+    view: parsed.searchParams.get('view'),
+    fs: parsed.searchParams.get('fs'),
+    to: parsed.searchParams.get('to'),
+    su: parsed.searchParams.get('su'),
+    bodyParam: parsed.searchParams.get('body')
+  };
+});
+assert(inviteBuilt.subject === 'Join our family tree on Demo Tree', 'invite subject uses the site title (' + inviteBuilt.subject + ')');
+assert(inviteBuilt.body === [
+  'Dear Alice,',
+  '',
+  'Sam Example has invited you to view and contribute to our family tree on Demo Tree.',
+  '',
+  'Open this link to get started:',
+  'http://127.0.0.1:1234',
+  '',
+  'Sign in with Google using the email address this invitation was sent to. If you cannot sign in, ask the person who invited you to confirm that your email is on the access list.',
+  '',
+  'Sam Example'
+].join('\n'), 'invite body matches the standard template');
+assert(inviteBuilt.host === 'mail.google.com/mail/' && inviteBuilt.view === 'cm' && inviteBuilt.fs === '1', 'Gmail compose URL uses view=cm and fs=1');
+assert(inviteBuilt.to === 'alice.example@example.com' && inviteBuilt.su === inviteBuilt.subject && inviteBuilt.bodyParam === inviteBuilt.body, 'Gmail compose URL encodes to, su, and body');
+assert(inviteBuilt.href.startsWith('https://mail.google.com/mail/?'), 'Gmail compose URL is https and not fetched');
+
+const inviteClick = await page.evaluate(() => {
+  const T = window.__TREE;
+  T.openQuickEditModal('p1');
+  const opened = [];
+  const origOpen = window.open;
+  window.open = (url, name, feats) => { opened.push({ url, name, feats }); return { closed: false }; };
+  document.getElementById('btn-qe-invite').click();
+  window.open = origOpen;
+  const url = opened[0] && opened[0].url;
+  let parsed = null;
+  try { parsed = url ? new URL(url) : null; } catch (e) {}
+  return {
+    count: opened.length,
+    name: opened[0] && opened[0].name,
+    to: parsed && parsed.searchParams.get('to'),
+    su: parsed && parsed.searchParams.get('su'),
+    view: parsed && parsed.searchParams.get('view'),
+    hrefStart: url && url.slice(0, 40),
+    emailSaved: (T.getState().persons.p1.emails || []).includes('alice.example@example.com')
+  };
+});
+assert(inviteClick.count === 1 && inviteClick.name === '_blank' && inviteClick.view === 'cm' && inviteClick.to === 'alice.example@example.com', 'Invite button opens a Gmail compose tab for the invitee (' + inviteClick.hrefStart + ')');
+assert(/Join our family tree on /.test(inviteClick.su || ''), 'Invite button subject comes from the template (' + inviteClick.su + ')');
+assert(inviteClick.emailSaved, 'Invite button still saves the email on the person');
+
+const inviteFallback = await page.evaluate(() => {
+  const T = window.__TREE;
+  const clicked = [];
+  const origOpen = window.open;
+  const origCreate = document.createElement.bind(document);
+  window.open = () => null;
+  document.createElement = (tag) => {
+    const el = origCreate(tag);
+    if (String(tag).toLowerCase() === 'a') {
+      const origClick = el.click.bind(el);
+      el.click = () => { clicked.push(el.href); };
+    }
+    return el;
+  };
+  const result = T.openTreeInviteCompose({
+    to: 'bob.example@example.com',
+    inviteeFirstName: 'Bob',
+    inviterName: 'Sam Example',
+    siteTitle: 'Demo Tree',
+    appUrl: 'http://127.0.0.1:1234'
+  });
+  window.open = origOpen;
+  document.createElement = origCreate;
+  return { usedGmail: result.usedGmail, mailto: result.mailtoUrl, clicked: clicked[0] || '' };
+});
+assert(inviteFallback.usedGmail === false && inviteFallback.clicked.startsWith('mailto:') && inviteFallback.clicked === inviteFallback.mailto, 'a blocked popup falls back to a mailto: draft');
+
 
 assert(errs.length === 0, 'no page errors (' + errs.join(' | ') + ')');
 

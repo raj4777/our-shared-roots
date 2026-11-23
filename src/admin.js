@@ -2051,6 +2051,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           lines.push('1 NAME Living /Private/');
         } else {
           lines.push(`1 NAME ${gedValue(p.given || '')} /${String(p.surname || '').replace(/[\/\r\n]/g, ' ').trim()}/`);
+          if (p.nickname) lines.push(`2 NICK ${gedValue(p.nickname)}`);
           if (p.altName) {
             lines.push(`1 NAME ${gedValue(p.altName)}`);
             lines.push(is7 ? '2 TYPE AKA' : '2 TYPE aka');
@@ -2168,6 +2169,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
               given: '',
               surname: '',
               altName: '',
+              nickname: '',
               emails: [],
               photoUrl: '',
               media: [],
@@ -2235,6 +2237,8 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
                 if (fullAlt && !currentRec.altName) currentRec.altName = fullAlt;
               }
               currentSub = { kind: 'NAME', isPrimary: currentRec.altName === '' };
+            } else if (tag === 'NICK' && val) {
+              if (!currentRec.nickname) currentRec.nickname = val;
             } else if (tag === 'SEX') {
               currentRec.sex = ['M', 'F', 'X'].includes(val.toUpperCase()) ? val.toUpperCase() : 'U';
             } else if (tag === 'EMAIL' && val) {
@@ -2265,9 +2269,12 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
               customTagCount++;
             }
           } else if (level === 2 && currentSub) {
-            if (typeof currentSub === 'object' && currentSub.kind === 'NAME' && currentSub.isPrimary) {
-              if (tag === 'GIVN' && val) currentRec.given = val;
-              if (tag === 'SURN' && val) currentRec.surname = val;
+            if (typeof currentSub === 'object' && currentSub.kind === 'NAME') {
+              if (currentSub.isPrimary) {
+                if (tag === 'GIVN' && val) currentRec.given = val;
+                if (tag === 'SURN' && val) currentRec.surname = val;
+              }
+              if (tag === 'NICK' && val && !currentRec.nickname) currentRec.nickname = val;
             } else if (typeof currentSub === 'object' && currentSub.type) {
               if (tag === 'DATE') currentSub.date = val;
               if (tag === 'PLAC') currentSub.place = val;

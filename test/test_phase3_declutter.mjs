@@ -54,6 +54,7 @@ assert(src.includes('add-bar-open') && src.includes('scheduleHideAddBar') && src
 assert(/@media \(hover: none\)/.test(src) && /person-card\.selected \.canvas-add-bar/.test(src), 'on touch, the add bar stays on the selected card');
 assert(!src.includes('(isSelected && canEditTree())'), 'the add bar is not limited to the selected card');
 assert(/const CARD_W = 188/.test(src) && /const CARD_H = 104/.test(src), 'person cards are 188×104');
+assert(/\.card-nickname/.test(src) && /font-style:\s*italic/.test(src) && /font-weight:\s*normal/.test(src) && /text-overflow:\s*ellipsis/.test(src), 'card nickname is italic, not bold, and ellipsizes if long');
 assert(/flex-direction:\s*row/.test(src) && !/flex flex-col items-center justify-center text-center/.test(src), 'the photo/avatar sits in a left column, not above the name');
 assert(/const LAYER_HEIGHT = 200/.test(src) && /gutterTop \+ 36/.test(src), 'generation gutters leave room under the shorter card for the hover pill and union buses');
 assert(!/data-set-child-linkage|data-set-union-status|data-move-union/.test(src.split('IMMEDIATE FAMILY')[1]?.slice(0, 2500) || ''), 'Immediate Family no longer has linkage, status, or reorder controls');
@@ -63,7 +64,7 @@ function fixture() {
   return {
     tree: { title: 'Phase 3 demo', id: 'demo', revision: 1 },
     persons: {
-      a1: { id: 'a1', given: 'Alice', surname: 'Example', sex: 'F', livingStatus: 'living', events: [{ id: 'b1', type: 'BIRT', date: '1970' }] },
+      a1: { id: 'a1', given: 'Alice', surname: 'Example', nickname: 'Allie', sex: 'F', livingStatus: 'living', events: [{ id: 'b1', type: 'BIRT', date: '1970' }] },
       b1: { id: 'b1', given: 'Bob', surname: 'Example', sex: 'M', livingStatus: 'living', events: [{ id: 'b2', type: 'BIRT', date: '1968' }] },
       c1: { id: 'c1', given: 'Cara', surname: 'Example', sex: 'F', livingStatus: 'living', events: [{ id: 'b3', type: 'BIRT', date: '2001' }] }
     },
@@ -164,15 +165,18 @@ const cardLayout = await page.evaluate(() => {
     const r = el.getBoundingClientRect();
     const name = el.querySelector('.card-name');
     const life = el.querySelector('.card-lifespan');
+    const nick = el.querySelector('.card-nickname');
     const av = el.querySelector('.card-avatar');
     const pencil = el.querySelector('[data-canvas-quick-edit]');
     const nr = name && name.getBoundingClientRect();
     const lr = life && life.getBoundingClientRect();
+    const kr = nick && nick.getBoundingClientRect();
     const ar = av && av.getBoundingClientRect();
     const pr = pencil && pencil.getBoundingClientRect();
     const inside = (box) => !box || (box.top >= r.top - 0.5 && box.bottom <= r.bottom + 0.5 && box.left >= r.left - 0.5 && box.right <= r.right + 0.5);
     const hits = (a, b) => a && b && a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
     const mid = (box) => box && (box.top + box.bottom) / 2;
+    const nickCs = nick ? getComputedStyle(nick) : null;
     return {
       id: el.dataset.personCard,
       w: el.offsetWidth,
@@ -180,9 +184,13 @@ const cardLayout = await page.evaluate(() => {
       left: r.left, right: r.right, top: r.top, bottom: r.bottom,
       nameInside: inside(nr),
       lifeInside: inside(lr),
+      nickInside: !nick || inside(kr),
+      nickText: nick ? nick.textContent : '',
+      nickItalic: nickCs && nickCs.fontStyle,
+      nickWeight: nickCs && nickCs.fontWeight,
       avatarLeftOfText: !!(ar && nr && ar.right <= nr.left + 1),
       avatarVCenter: ar ? Math.abs(mid(ar) - mid(r)) : 99,
-      textHitsPencil: hits(nr, pr) || hits(lr, pr)
+      textHitsPencil: hits(nr, pr) || hits(lr, pr) || hits(kr, pr)
     };
   });
   let overlap = false;
@@ -196,9 +204,10 @@ const cardLayout = await page.evaluate(() => {
 });
 assert(cardLayout.count >= 3 && cardLayout.sizes.every(c => Math.abs(c.w - 188) < 1 && Math.abs(c.h - 104) < 1), 'rendered person cards are 188×104: ' + JSON.stringify(cardLayout.sizes));
 assert(!cardLayout.overlap, 'person cards do not overlap each other: ' + JSON.stringify(cardLayout.sizes));
-assert(cardLayout.sizes.every(c => c.nameInside && c.lifeInside), 'name and dates stay inside the card without clipping: ' + JSON.stringify(cardLayout.sizes));
+assert(cardLayout.sizes.every(c => c.nameInside && c.lifeInside && c.nickInside), 'name, nickname, and dates stay inside the card without clipping: ' + JSON.stringify(cardLayout.sizes));
 assert(cardLayout.sizes.every(c => c.avatarLeftOfText && c.avatarVCenter < 8), 'the avatar is on the left and vertically centered: ' + JSON.stringify(cardLayout.sizes));
-assert(cardLayout.sizes.every(c => !c.textHitsPencil), 'the pencil does not overlap name or dates: ' + JSON.stringify(cardLayout.sizes));
+assert(cardLayout.sizes.every(c => !c.textHitsPencil), 'the pencil does not overlap name, nickname, or dates: ' + JSON.stringify(cardLayout.sizes));
+assert(cardLayout.sizes.some(c => c.id === 'a1' && c.nickText === '"Allie"' && c.nickItalic === 'italic' && (c.nickWeight === 'normal' || c.nickWeight === '400')), 'Alice\'s card shows an italic, not-bold quoted nickname: ' + JSON.stringify(cardLayout.sizes));
 
 await page.evaluate(() => { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); });
 await page.mouse.move(2, 2);
@@ -647,6 +656,84 @@ const touched = await touchPage.evaluate(() => {
 assert(touched.qe && !touched.inspectorOpen, 'a touch/tap on the canvas pencil opens Quick Edit only, not the Inspector: ' + JSON.stringify(touched));
 assert(touchErrs.length === 0, 'no touch-page errors (' + touchErrs.join(' | ') + ')');
 await touchPage.close();
+
+const nameDefaults = await page.evaluate(() => {
+  const T = window.__TREE;
+  const helper = {
+    husbandNew: T.applySpouseNameDefaults({ sex: 'M', surname: 'Smith' }, { sex: 'F', surname: '', altName: '' }),
+    husbandExistingDifferent: T.applySpouseNameDefaults({ sex: 'M', surname: 'Smith' }, { sex: 'F', surname: 'Jones', altName: '' }),
+    husbandMaidenKept: T.applySpouseNameDefaults({ sex: 'M', surname: 'Smith' }, { sex: 'F', surname: 'Jones', altName: 'Lee' }),
+    husbandSameName: T.applySpouseNameDefaults({ sex: 'M', surname: 'Smith' }, { sex: 'F', surname: 'Smith', altName: '' }),
+    wifeAdds: T.applySpouseNameDefaults({ sex: 'F', surname: 'Smith' }, { sex: 'M', surname: '', altName: '' }),
+    unknownAdds: T.applySpouseNameDefaults({ sex: 'U', surname: 'Smith' }, { sex: 'U', surname: '', altName: '' }),
+    existingKept: T.applySpouseNameDefaults({ sex: 'F', surname: 'Smith' }, { sex: 'M', surname: 'Brown', altName: '' })
+  };
+  const fixture = (partners) => ({
+    tree: { title: 'Name defaults', id: 'demo', revision: 1 },
+    persons: partners,
+    families: {},
+    accessControl: { permissions: [] },
+    changeEvents: [],
+    changeSequence: 0,
+    superAdminEmail: 'sa@example.com'
+  });
+  const people = {
+    dad: { id: 'dad', given: 'Owen', surname: 'Smith', sex: 'M', livingStatus: 'living', events: [] },
+    mom: { id: 'mom', given: 'Nina', surname: 'Jones', sex: 'F', livingStatus: 'living', events: [] },
+    solo: { id: 'solo', given: 'Quinn', surname: 'Lee', sex: 'F', livingStatus: 'living', events: [] }
+  };
+  T.load({
+    ...fixture({ dad: people.dad, mom: people.mom }),
+    families: { f1: { id: 'f1', partner1Id: 'dad', partner2Id: 'mom', status: 'married', marriageDate: '', marriagePlace: '', children: [] } }
+  });
+  T.setTestWrite?.(() => ({ ok: true }));
+  const beforeFromDad = Object.keys(T.getState().persons);
+  T.addNewRelativeToPerson('dad', 'child');
+  const fromDadId = Object.keys(T.getState().persons).find((id) => !beforeFromDad.includes(id));
+  const fromDad = T.getState().persons[fromDadId];
+  const beforeFromMom = Object.keys(T.getState().persons);
+  T.addNewRelativeToPerson('mom', 'child');
+  const fromMomId = Object.keys(T.getState().persons).find((id) => !beforeFromMom.includes(id));
+  const fromMom = T.getState().persons[fromMomId];
+  T.load(fixture({ solo: people.solo }));
+  T.setTestWrite?.(() => ({ ok: true }));
+  const beforeSolo = Object.keys(T.getState().persons);
+  T.addNewRelativeToPerson('solo', 'child');
+  const soloChildId = Object.keys(T.getState().persons).find((id) => !beforeSolo.includes(id));
+  const soloChild = T.getState().persons[soloChildId];
+  T.load(fixture({ dad: people.dad, mom: people.mom }));
+  T.setTestWrite?.(() => ({ ok: true }));
+  const beforeWife = Object.keys(T.getState().persons);
+  T.addNewRelativeToPerson('dad', 'spouse');
+  const wifeId = Object.keys(T.getState().persons).find((id) => !beforeWife.includes(id));
+  const wife = T.getState().persons[wifeId];
+  const wifeForm = document.querySelector('#form-edit-person-profile [name="surname"]');
+  const maidenForm = document.querySelector('#form-edit-person-profile [name="altName"]');
+  const beforeHusb = Object.keys(T.getState().persons);
+  T.addNewRelativeToPerson('mom', 'spouse');
+  const husbId = Object.keys(T.getState().persons).find((id) => !beforeHusb.includes(id));
+  const husb = T.getState().persons[husbId];
+  return {
+    helper,
+    fromDad: fromDad && { surname: fromDad.surname, given: fromDad.given },
+    fromMom: fromMom && { surname: fromMom.surname, given: fromMom.given },
+    soloChild: soloChild && { surname: soloChild.surname },
+    wife: wife && { surname: wife.surname, altName: wife.altName || '', sex: wife.sex, formSurname: wifeForm && wifeForm.value, formMaiden: maidenForm && maidenForm.value },
+    husb: husb && { surname: husb.surname, altName: husb.altName || '', sex: husb.sex }
+  };
+});
+assert(nameDefaults.helper.husbandNew.surname === 'Smith' && nameDefaults.helper.husbandNew.altName === '', 'new wife of a husband gets his last name and an empty maiden name');
+assert(nameDefaults.helper.husbandExistingDifferent.surname === 'Smith' && nameDefaults.helper.husbandExistingDifferent.altName === 'Jones', 'a wife who already has a different surname keeps it as maiden and takes the husband last name');
+assert(nameDefaults.helper.husbandMaidenKept.altName === 'Lee' && nameDefaults.helper.husbandMaidenKept.surname === 'Smith', 'an existing maiden name is not overwritten');
+assert(nameDefaults.helper.husbandSameName.surname === 'Smith' && nameDefaults.helper.husbandSameName.altName === '', 'a wife already using the husband last name does not get a maiden copy');
+assert(nameDefaults.helper.wifeAdds.surname === 'Smith' && nameDefaults.helper.wifeAdds.altName === '', 'adding a spouse from a wife uses a neutral last-name prefill');
+assert(nameDefaults.helper.unknownAdds.surname === 'Smith' && nameDefaults.helper.unknownAdds.altName === '', 'adding a spouse from an unknown-sex person uses a neutral last-name prefill');
+assert(nameDefaults.helper.existingKept.surname === 'Brown', 'a last name already entered is not overwritten in the neutral case');
+assert(nameDefaults.fromDad && nameDefaults.fromDad.surname === 'Smith', 'a child added from the father gets the father last name (' + (nameDefaults.fromDad && nameDefaults.fromDad.surname) + ')');
+assert(nameDefaults.fromMom && nameDefaults.fromMom.surname === 'Smith', 'a child added from the mother still gets the father last name (' + (nameDefaults.fromMom && nameDefaults.fromMom.surname) + ')');
+assert(nameDefaults.soloChild && nameDefaults.soloChild.surname === 'Lee', 'a child added when no male parent is known falls back to the anchor last name');
+assert(nameDefaults.wife && nameDefaults.wife.sex === 'F' && nameDefaults.wife.surname === 'Smith' && nameDefaults.wife.altName === '' && nameDefaults.wife.formSurname === 'Smith' && nameDefaults.wife.formMaiden === '', 'adding a wife from a husband prefills Last name and leaves maiden empty and editable');
+assert(nameDefaults.husb && nameDefaults.husb.sex === 'M' && nameDefaults.husb.surname === 'Jones' && nameDefaults.husb.altName === '', 'adding a spouse from a wife prefills the last name neutrally with no maiden name');
 
 assert(errs.length === 0, 'no page errors (' + errs.join(' | ') + ')');
 await browser.close();

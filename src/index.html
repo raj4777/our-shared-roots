@@ -97,6 +97,22 @@
       overflow-wrap: anywhere;
       word-break: break-word;
     }
+    #inspector-person-nickname {
+      font-style: italic;
+      font-weight: normal;
+    }
+    .person-card .card-nickname {
+      margin-top: 1px;
+      font-size: 10px;
+      line-height: 1.25;
+      font-weight: normal;
+      font-style: italic;
+      text-align: left;
+      color: #64748b;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .person-card .card-lifespan {
       margin-top: 2px;
       font-size: 10.5px;
@@ -799,6 +815,7 @@
             <!-- Person Identity, Kinship ("This is you") & Vital Line -->
             <div class="min-w-0 pt-0.5">
               <h2 id="inspector-person-name" class="font-sans text-[17px] font-semibold text-slate-900 leading-snug break-words">Select a Person</h2>
+              <p id="inspector-person-nickname" class="hidden text-sm text-slate-600 leading-snug break-words mt-0.5 italic" style="font-style:italic;font-weight:normal"></p>
               <div id="inspector-kinship-label" class="text-xs text-slate-600 mt-0.5 font-medium">This is you</div>
               <div id="inspector-vital-line" class="flex items-center gap-1.5 text-xs text-slate-600 mt-1">
                 <span class="text-slate-500 font-bold" aria-hidden="true">✳</span>
@@ -1006,6 +1023,16 @@
         </fieldset>
         <div class="grid grid-cols-2 gap-2">
           <div>
+            <label class="block text-[11px] font-medium text-slate-600 mb-1" for="qe-prefix">Prefix</label>
+            <select id="qe-prefix" name="qePrefix" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg"></select>
+          </div>
+          <div>
+            <label class="block text-[11px] font-medium text-slate-600 mb-1" for="qe-suffix">Suffix</label>
+            <select id="qe-suffix" name="qeSuffix" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg"></select>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <div>
             <label class="block text-[11px] font-medium text-slate-600 mb-1" for="qe-given">First (and middle) name</label>
             <input id="qe-given" name="qeGiven" type="text" autocomplete="off" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
           </div>
@@ -1014,15 +1041,9 @@
             <input id="qe-surname" name="qeSurname" type="text" autocomplete="off" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
           </div>
         </div>
-        <div class="grid grid-cols-2 gap-2">
-          <div>
-            <label class="block text-[11px] font-medium text-slate-600 mb-1" for="qe-prefix">Prefix</label>
-            <select id="qe-prefix" name="qePrefix" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg"></select>
-          </div>
-          <div>
-            <label class="block text-[11px] font-medium text-slate-600 mb-1" for="qe-suffix">Suffix</label>
-            <select id="qe-suffix" name="qeSuffix" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg"></select>
-          </div>
+        <div>
+          <label class="block text-[11px] font-medium text-slate-600 mb-1" for="qe-nickname">Nickname</label>
+          <input id="qe-nickname" name="qeNickname" type="text" autocomplete="off" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
         </div>
         <div>
           <label class="block text-[11px] font-medium text-slate-600 mb-1" for="qe-alt">Maiden / birth surname</label>

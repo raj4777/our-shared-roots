@@ -44,6 +44,16 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       const t = String(getOsConfig().siteTitle || 'Family Tree').trim();
       return t || 'Family Tree';
     }
+    function getInviterDisplayName() {
+      const named = String((sessionAuth && sessionAuth.displayName) || '').trim();
+      if (named) return named;
+      const email = getActiveUserEmail();
+      if (email && email.includes('@')) {
+        const local = email.split('@')[0].trim();
+        if (local) return local;
+      }
+      return 'A family member';
+    }
     function getConfiguredSuperAdminEmail() {
       return String(getOsConfig().superAdminEmail || '').trim().toLowerCase();
     }
@@ -1195,6 +1205,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       document.getElementById('qe-given').value = person.given || '';
       document.getElementById('qe-surname').value = person.surname || '';
       document.getElementById('qe-alt').value = person.altName || '';
+      document.getElementById('qe-nickname').value = person.nickname || '';
       qeFillAffixSelect(document.getElementById('qe-prefix'), QE_PREFIX_OPTIONS, person.prefix || '');
       qeFillAffixSelect(document.getElementById('qe-suffix'), QE_SUFFIX_OPTIONS, person.suffix || '');
       document.getElementById('qe-birth-date').innerHTML = qeDateControlsHtml('birth', birt.date || '');
@@ -1260,6 +1271,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       const given = (document.getElementById('qe-given')?.value || '').trim();
       const surname = (document.getElementById('qe-surname')?.value || '').trim();
       const altName = (document.getElementById('qe-alt')?.value || '').trim();
+      const nickname = (document.getElementById('qe-nickname')?.value || '').trim();
       const prefix = (document.getElementById('qe-prefix')?.value || '').trim();
       const suffix = (document.getElementById('qe-suffix')?.value || '').trim();
       const sex = document.querySelector('#form-quick-edit input[name="qeSex"]:checked')?.value || 'U';
@@ -1297,8 +1309,10 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         p.altName = altName;
         p.prefix = prefix;
         p.suffix = suffix;
+        p.nickname = nickname;
         if (!p.prefix) delete p.prefix;
         if (!p.suffix) delete p.suffix;
+        if (!p.nickname) delete p.nickname;
         p.sex = sex;
         p.livingStatus = livingStatus;
         const birt = qeEnsureEvent(p, 'BIRT');
@@ -1382,14 +1396,69 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           });
         }
       }, manage ? 'Access Control' : 'Tree');
-      const origin = location.origin;
-      const subject = encodeURIComponent('Invitation to ' + getSiteTitle());
-      const body = encodeURIComponent(`You are invited to view our family tree.\n\n${origin}\n`);
-      const link = document.createElement('a');
-      link.href = `mailto:${encodeURIComponent(newEmail)}?subject=${subject}&body=${body}`;
-      link.rel = 'noopener';
-      link.click();
-      showToast('Email saved. A mail draft opened; nothing was sent automatically.');
+      const invite = openTreeInviteCompose({
+        to: newEmail,
+        inviteeFirstName: (document.getElementById('qe-given')?.value || person.given || '').trim(),
+        inviterName: getInviterDisplayName(),
+        siteTitle: getSiteTitle(),
+        appUrl: location.origin
+      });
+      showToast(invite.usedGmail
+        ? 'Email saved. A Gmail draft opened in a new tab; nothing was sent automatically.'
+        : 'Email saved. A mail draft opened; nothing was sent automatically.');
+    }
+
+    function buildTreeInviteMessage({ siteTitle, inviteeFirstName, inviterName, appUrl } = {}) {
+      const title = String(siteTitle || getSiteTitle() || '').trim() || 'Family Tree';
+      const inviter = String(inviterName || getInviterDisplayName() || '').trim() || 'A family member';
+      const first = String(inviteeFirstName || '').trim();
+      const url = String(appUrl || (typeof location !== 'undefined' ? location.origin : '') || '').trim();
+      const subject = 'Join our family tree on ' + title;
+      const greeting = first ? ('Dear ' + first + ',') : 'Hello,';
+      const body = [
+        greeting,
+        '',
+        inviter + ' has invited you to view and contribute to our family tree on ' + title + '.',
+        '',
+        'Open this link to get started:',
+        url,
+        '',
+        'Sign in with Google using the email address this invitation was sent to. If you cannot sign in, ask the person who invited you to confirm that your email is on the access list.',
+        '',
+        inviter
+      ].join('\n');
+      return { subject, body, title, inviter, inviteeFirstName: first, appUrl: url };
+    }
+    function buildGmailComposeUrl(to, subject, body) {
+      const parts = ['view=cm', 'fs=1'];
+      if (to) parts.push('to=' + encodeURIComponent(to));
+      parts.push('su=' + encodeURIComponent(subject || ''));
+      parts.push('body=' + encodeURIComponent(body || ''));
+      return 'https://mail.google.com/mail/?' + parts.join('&');
+    }
+    function openTreeInviteCompose({ to, inviteeFirstName, inviterName, siteTitle, appUrl } = {}) {
+      const msg = buildTreeInviteMessage({
+        siteTitle: siteTitle || getSiteTitle(),
+        inviteeFirstName,
+        inviterName: inviterName || getInviterDisplayName(),
+        appUrl: appUrl || (typeof location !== 'undefined' ? location.origin : '')
+      });
+      const gmailUrl = buildGmailComposeUrl(to, msg.subject, msg.body);
+      const mailtoUrl = 'mailto:' + encodeURIComponent(to || '') + '?subject=' + encodeURIComponent(msg.subject) + '&body=' + encodeURIComponent(msg.body);
+      let opened = null;
+      try {
+        opened = window.open(gmailUrl, '_blank', 'noopener,noreferrer');
+      } catch (err) {
+        opened = null;
+      }
+      if (!opened) {
+        const link = document.createElement('a');
+        link.href = mailtoUrl;
+        link.rel = 'noopener';
+        link.target = '_blank';
+        link.click();
+      }
+      return { ...msg, to: to || '', gmailUrl, mailtoUrl, usedGmail: Boolean(opened) };
     }
 
     function initQuickEdit() {
@@ -1907,7 +1976,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         if (choices[field] === 'primary') return a;
         return isEmpty(a) ? b : a;
       };
-      const scalarFields = ['given', 'surname', 'altName', 'prefix', 'suffix', 'sex', 'livingStatus', 'bio', 'photoUrl', 'village'];
+      const scalarFields = ['given', 'surname', 'altName', 'nickname', 'prefix', 'suffix', 'sex', 'livingStatus', 'bio', 'photoUrl', 'village'];
       scalarFields.forEach(field => { primary[field] = pick(field, primary[field], secondary[field]); });
       const emails = [...new Set([...(primary.emails || []), ...(secondary.emails || [])]
         .map(e => String(e || '').trim().toLowerCase()).filter(Boolean))];
@@ -2008,6 +2077,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         given: person.given || '',
         surname: person.surname || '',
         altName: person.altName || '',
+        nickname: person.nickname || '',
         sex: person.sex || '',
         livingStatus: person.livingStatus || '',
         village: person.village || '',
@@ -2027,6 +2097,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       ['given', 'Given name'],
       ['surname', 'Surname'],
       ['altName', 'Also known as'],
+      ['nickname', 'Nickname'],
       ['sex', 'Sex'],
       ['livingStatus', 'Living status'],
       ['birth', 'Birth'],
@@ -3304,6 +3375,19 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       const label = getDeceasedLabel(person);
       if (!label) return '';
       return `<span class="deceased-corner" title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}"></span>`;
+    }
+
+    function paintInspectorNickname(person) {
+      const el = document.getElementById('inspector-person-nickname');
+      if (!el) return;
+      const nick = person && String(person.nickname || '').trim();
+      if (nick) {
+        el.textContent = '"' + nick + '"';
+        el.classList.remove('hidden');
+      } else {
+        el.textContent = '';
+        el.classList.add('hidden');
+      }
     }
 
     function getDisplayName(person) {
@@ -4696,10 +4780,10 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         const isKin = activePersonIds.has(id);
         const displayName = getDisplayName(p);
         const lifespanStr = getCardLifespanLabel(p);
+        const nickStr = String(p.nickname || '').trim();
+        const nickLabel = nickStr ? '"' + nickStr + '"' : '';
         const deceasedLabel = getDeceasedLabel(p);
-        const cardAria = deceasedLabel
-          ? (lifespanStr ? `${displayName}, ${lifespanStr}, ${deceasedLabel}` : `${displayName}, ${deceasedLabel}`)
-          : (lifespanStr ? `${displayName}, ${lifespanStr}` : displayName);
+        const cardAria = [displayName, nickLabel, lifespanStr, deceasedLabel].filter(Boolean).join(', ');
 
         const focusView = isFocusViewActive();
         const isFocusPerson = focusView && id === getFocusPersonId();
@@ -4729,7 +4813,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         const portraitUrl = p.photoUrl ? safeImageUrl(p.photoUrl) : '';
         const className = `person-card absolute bg-white border-[1.5px] ${cardBorder} rounded-xl shadow-2xs cursor-pointer flex items-center z-10 ${isSelected ? 'selected' : ''} ${isCentral ? 'central-person' : ''} ${isKin ? 'kinship-highlight' : ''}`;
         const style = `left:${pos.x}px; top:${pos.y}px; width:${CARD_W}px; height:${CARD_H}px;`;
-        const sig = [displayName, lifespanStr, deceasedLabel, cardAria, isSelected ? '1' : '0', isCentral ? '1' : '0', isKin ? '1' : '0', hasParentBranch ? '1' : '0', isFocusPerson ? '1' : '0', isBranchCollapsed ? '1' : '0', branchTitle, cardBorder, avatarRing, portraitUrl, p.sex || '', canEditTree() ? '1' : '0'].join('\u0001');
+        const sig = [displayName, nickLabel, lifespanStr, deceasedLabel, cardAria, isSelected ? '1' : '0', isCentral ? '1' : '0', isKin ? '1' : '0', hasParentBranch ? '1' : '0', isFocusPerson ? '1' : '0', isBranchCollapsed ? '1' : '0', branchTitle, cardBorder, avatarRing, portraitUrl, p.sex || '', canEditTree() ? '1' : '0'].join('\u0001');
         const inner = `
             ${hasParentBranch ? `
               <button
@@ -4763,6 +4847,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
               <div class="card-name font-sans font-semibold text-slate-900">
                 ${escapeHtml(displayName)}
               </div>
+              ${nickLabel ? `<div class="card-nickname">${escapeHtml(nickLabel)}</div>` : ''}
               <div class="card-lifespan text-slate-500">
                 ${escapeHtml(lifespanStr)}
               </div>
@@ -5035,6 +5120,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       }
 
       document.getElementById('inspector-person-name').textContent = getDisplayNameWithMaiden(person);
+      paintInspectorNickname(person);
 
       const inspectorCorner = document.getElementById('inspector-deceased-corner');
       if (inspectorCorner) {
@@ -5509,6 +5595,11 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
                 </div>
               </div>
 
+              <div>
+                <label class="block text-[11px] font-medium text-slate-600 mb-1">Nickname</label>
+                <input name="nickname" type="text" value="${escapeAttr(person.nickname || '')}" ${editable ? '' : 'disabled'} class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg" />
+              </div>
+
               <div class="grid grid-cols-2 gap-2">
                 <div>
                   <label class="block text-[11px] font-medium text-slate-600 mb-1">Maiden / Birth Surname</label>
@@ -5634,6 +5725,43 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     /* =====================================================================
      * 10. RELATIVE CREATION & KINSHIP PATHFINDER
      * ===================================================================== */
+
+    function applySpouseNameDefaults(anchor, person) {
+      const husbandToWife = Boolean(anchor && anchor.sex === 'M' && person && person.sex === 'F');
+      const anchorSurname = String((anchor && anchor.surname) || '').trim();
+      const currentSurname = String((person && person.surname) || '').trim();
+      const currentMaiden = String((person && person.altName) || '').trim();
+      const out = { surname: currentSurname, altName: currentMaiden };
+      if (husbandToWife) {
+        if (!currentSurname) {
+          out.surname = anchorSurname;
+        } else if (anchorSurname && currentSurname !== anchorSurname) {
+          if (!currentMaiden) out.altName = currentSurname;
+          out.surname = anchorSurname;
+        }
+      } else if (!currentSurname) {
+        out.surname = anchorSurname;
+      }
+      return out;
+    }
+
+    function defaultSurnameForNewChild(anchor, state, currentSurname) {
+      const existing = String(currentSurname || '').trim();
+      if (existing) return existing;
+      const anchorId = anchor && anchor.id;
+      const families = (state && state.families) || {};
+      const persons = (state && state.persons) || {};
+      const fam = Object.values(families).find((f) => f && (f.partner1Id === anchorId || f.partner2Id === anchorId));
+      const p1 = fam && fam.partner1Id ? persons[fam.partner1Id] : null;
+      const p2 = fam && fam.partner2Id ? persons[fam.partner2Id] : null;
+      const father = (p1 && p1.sex === 'M') ? p1 : (p2 && p2.sex === 'M') ? p2 : null;
+      if (father) {
+        const fromFather = String(father.surname || '').trim();
+        if (fromFather) return fromFather;
+      }
+      return String((anchor && anchor.surname) || '').trim();
+    }
+
     function addNewRelativeToPerson(anchorId, relType) {
       const anchor = appState.persons[anchorId];
       if (!anchor) return;
@@ -5681,12 +5809,14 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
             };
           }
         } else if (relType === 'spouse') {
+          const spouseSex = anchor.sex === 'M' ? 'F' : anchor.sex === 'F' ? 'M' : 'U';
+          const spouseNames = applySpouseNameDefaults(anchor, { sex: spouseSex, surname: '', altName: '' });
           state.persons[newId] = {
             id: newId,
             given: 'Partner',
-            surname: defaultSurname,
-            altName: '',
-            sex: anchor.sex === 'M' ? 'F' : anchor.sex === 'F' ? 'M' : 'U',
+            surname: spouseNames.surname,
+            altName: spouseNames.altName,
+            sex: spouseSex,
             livingStatus: anchor.livingStatus || 'living',
             emails: [],
             photoUrl: '',
@@ -5719,7 +5849,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           state.persons[newId] = {
             id: newId,
             given: 'Child',
-            surname: defaultSurname,
+            surname: defaultSurnameForNewChild(anchor, state, ''),
             altName: '',
             sex: 'U',
             livingStatus: 'living',
@@ -6041,6 +6171,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       };
       add('name', getDisplayName(person));
       add('altName', person.altName);
+      add('nickname', person.nickname);
       (person.emails || []).forEach(email => add('email', email));
       add('notes', person.bio || person.notes);
       add('village', person.village);
@@ -7264,6 +7395,8 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
             p.given = (fd.get('given') || '').trim();
             p.surname = (fd.get('surname') || '').trim();
             p.altName = (fd.get('altName') || '').trim();
+            p.nickname = (fd.get('nickname') || '').trim();
+            if (!p.nickname) delete p.nickname;
             p.sex = fd.get('sex') || 'U';
             p.livingStatus = fd.get('livingStatus') || 'living';
             const rawPhoto = (fd.get('photoUrl') || '').trim();
@@ -7584,6 +7717,15 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         openInspector,
         openQuickEditModal,
         closeQuickEditModal,
+        addNewRelativeToPerson,
+        applySpouseNameDefaults,
+        defaultSurnameForNewChild,
+        getSiteTitle,
+        getInviterDisplayName,
+        buildTreeInviteMessage,
+        buildGmailComposeUrl,
+        openTreeInviteCompose,
+        qeInviteToSite,
         dateStringToQe,
         qeToDateString,
         normalizeUnionStatus,
