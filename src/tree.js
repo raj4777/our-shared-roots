@@ -1,8 +1,10 @@
 window.FIREBASE_CONFIG = window.FIREBASE_CONFIG || null;
+window.OSR_APPCHECK = window.OSR_APPCHECK || { siteKey: '', enterprise: false };
 
 import { applyHostingAuthDomain } from './firebase-config.js';
 import { computeAccessListsFromPermissions, frozenAccessListsFromMainDoc, reconcilePermissionsWithMainDoc, describeAclReport, nextArchiveRevision } from './acl-core.js';
-import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendChangeLogEntry, applyDomainDiffToSnap, assignLogCheckpoints, clearAppErrorLog, compactChangeLogEvents, computeDomainDiff, deepClone, describeLogStorage, describeMainStorage, entryIsRevertible, escapeHtml, extractEmbeddedLog, formatFirestoreError, formatStorageKb, generateId, getArchiveDocPath, getArchiveId, getArchiveLogDocPath, getArchiveLogId, getEntryDiff, getOsConfig, isOwnEchoSnapshot, jsonFitsInDoc, loadAppErrorLog, logStateFromLogDoc, mergeLogStates, openFirestoreDatabase, paintStorageRow, reconstructStateBeforeEntry, recordAppError, rememberOwnStamp, reservedSizeForFields, trimChangeLogToFit, writeArchiveAndLog } from './save-core.js';
+import { createEditLockManager } from './edit-locks.js';
+import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendChangeLogEntry, applyDomainDiffToSnap, assignLogCheckpoints, clearAppErrorLog, compactChangeLogEvents, computeDomainDiff, deepClone, describeLogStorage, describeMainStorage, entryIsRevertible, escapeHtml, extractEmbeddedLog, formatFirestoreError, formatStorageKb, generateId, getArchiveDocPath, getArchiveId, getArchiveLogDocPath, getArchiveLogId, getEntryDiff, getOsConfig, isOfflineWriteError, isOwnEchoSnapshot, jsonFitsInDoc, loadAppErrorLog, logStateFromLogDoc, mergeLogStates, openFirestoreDatabase, paintStorageRow, reconstructStateBeforeEntry, recordAppError, rememberOwnStamp, reservedSizeForFields, trimChangeLogToFit, writeArchiveAndLog } from './save-core.js';
 
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
     import {
@@ -28,7 +30,13 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       setDoc,
       onSnapshot,
       runTransaction,
+      collection,
+      deleteDoc,
+      serverTimestamp,
+      Timestamp,
     } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+    import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
+    import { initializeAppCheck, ReCaptchaV3Provider, ReCaptchaEnterpriseProvider } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app-check.js";
 
     configureSaveCore({ getDb: () => db, getFirebaseUser: () => firebaseUser });
 
@@ -59,7 +67,229 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     applyOsFirebaseConfig();
 
 
-    const LEGACY_STORAGE_KEYS = ['genealogy_studio_shared_v1', 'genealogy_studio_v1_state'];
+    const OSR_LANG_KEY = 'osr_ui_lang_v1';
+    const OSR_I18N = {
+      en: {
+        langName: 'English',
+        language: 'Language',
+        signIn: 'Sign in',
+        signOut: 'Sign Out',
+        admin: 'Admin',
+        profile: 'Profile',
+        tree: 'Tree',
+        outline: 'Outline',
+        kinship: 'Kinship',
+        print: 'Print',
+        printPdf: 'Print / Save as PDF',
+        search: 'Find a person, place, year, or notes…',
+        mergePeople: 'Merge duplicate people',
+        takePhoto: 'Take photo',
+        chooseGallery: 'Choose from gallery',
+        facts: 'Facts',
+        photos: 'Photos & videos',
+        biography: 'Biography',
+        family: 'Immediate family',
+        more: 'More',
+        edit: 'Edit',
+        add: 'Add',
+        cancel: 'Cancel',
+        save: 'Save',
+        fit: 'Fit',
+        showFullTree: 'Show full tree',
+        focusView: 'Focus view',
+        settings: 'Settings',
+        peopleAccess: 'People & Access',
+        changeLog: 'Change log',
+        data: 'Data',
+        overview: 'Overview',
+        inviteTitle: 'Invite someone by email',
+        inviteHelp: 'Adds the address to the access list, then gives you a link and a mailto draft. Email is not sent automatically.',
+        inviteEmail: 'Email address',
+        inviteRole: 'Role',
+        inviteRoleView: 'View',
+        inviteRoleEdit: 'Edit',
+        createInvite: 'Create invite',
+        copyLink: 'Copy invite text',
+        inviteOpenMail: 'Open in email app'
+      },
+      hi: {
+        langName: 'हिन्दी',
+        language: 'भाषा',
+        signIn: 'साइन इन',
+        signOut: 'साइन आउट',
+        admin: 'प्रशासन',
+        profile: 'प्रोफ़ाइल',
+        tree: 'वृक्ष',
+        outline: 'सूची',
+        kinship: 'रिश्ते',
+        print: 'प्रिंट',
+        printPdf: 'प्रिंट / पीडीएफ सहेजें',
+        search: 'व्यक्ति, स्थान, वर्ष या नोट खोजें…',
+        mergePeople: 'दोहरी प्रविष्टियाँ मिलाएँ',
+        takePhoto: 'फ़ोटो लें',
+        chooseGallery: 'गैलरी से चुनें',
+        facts: 'तथ्य',
+        photos: 'फ़ोटो और वीडियो',
+        biography: 'जीवन परिचय',
+        family: 'निकट परिवार',
+        more: 'और',
+        edit: 'संपादित करें',
+        add: 'जोड़ें',
+        cancel: 'रद्द करें',
+        save: 'सहेजें',
+        fit: 'फ़िट',
+        showFullTree: 'पूरा वृक्ष दिखाएँ',
+        focusView: 'शाखा दृश्य',
+        settings: 'सेटिंग्स',
+        peopleAccess: 'लोग और पहुँच',
+        changeLog: 'परिवर्तन लॉग',
+        data: 'डेटा',
+        overview: 'सारांश',
+        inviteTitle: 'ईमेल से आमंत्रित करें',
+        inviteHelp: 'पता पहुँच सूची में जुड़ जाता है, फिर आपको लिंक और मेल ड्राफ़्ट मिलता है। ईमेल अपने आप नहीं भेजा जाता।',
+        inviteEmail: 'ईमेल पता',
+        inviteRole: 'भूमिका',
+        inviteRoleView: 'देखें',
+        inviteRoleEdit: 'संपादन',
+        createInvite: 'आमंत्रण बनाएँ',
+        copyLink: 'आमंत्रण पाठ कॉपी करें',
+        inviteOpenMail: 'ईमेल ऐप में खोलें'
+      },
+      mr: {
+        langName: 'मराठी',
+        language: 'भाषा',
+        signIn: 'साइन इन',
+        signOut: 'साइन आउट',
+        admin: 'प्रशासन',
+        profile: 'प्रोफाइल',
+        tree: 'वृक्ष',
+        outline: 'यादी',
+        kinship: 'नाते',
+        print: 'प्रिंट',
+        printPdf: 'प्रिंट / पीडीएफ जतन करा',
+        search: 'व्यक्ती, ठिकाण, वर्ष किंवा टिपा शोधा…',
+        mergePeople: 'जुळ्या नोंदी एकत्र करा',
+        takePhoto: 'फोटो काढा',
+        chooseGallery: 'गॅलरीतून निवडा',
+        facts: 'तथ्य',
+        photos: 'फोटो आणि व्हिडिओ',
+        biography: 'चरित्र',
+        family: 'निकटचे कुटुंब',
+        more: 'अधिक',
+        edit: 'संपादित करा',
+        add: 'जोडा',
+        cancel: 'रद्द करा',
+        save: 'जतन करा',
+        fit: 'फिट',
+        showFullTree: 'संपूर्ण वृक्ष दाखवा',
+        focusView: 'शाखा दृश्य',
+        settings: 'सेटिंग्ज',
+        peopleAccess: 'लोक आणि प्रवेश',
+        changeLog: 'बदलांची नोंद',
+        data: 'डेटा',
+        overview: 'आढावा',
+        inviteTitle: 'ईमेलने आमंत्रित करा',
+        inviteHelp: 'पत्ता प्रवेश यादीत जोडला जातो, नंतर तुम्हाला लिंक आणि मेल मसुदा मिळतो. ईमेल आपोआप पाठवला जात नाही.',
+        inviteEmail: 'ईमेल पत्ता',
+        inviteRole: 'भूमिका',
+        inviteRoleView: 'पहा',
+        inviteRoleEdit: 'संपादन',
+        createInvite: 'आमंत्रण तयार करा',
+        copyLink: 'आमंत्रण मजकूर कॉपी करा',
+        inviteOpenMail: 'ईमेल अॅपमध्ये उघडा'
+      }
+    };
+
+
+    function ensureLanguageSwitcher() {
+      const slots = [document.getElementById('ui-language-slot'), document.getElementById('ui-language-slot-menu')];
+      slots.forEach(slot => {
+        if (!slot) return;
+        if (!slot.querySelector('#ui-language-select') && !slot.querySelector('select')) {
+          slot.innerHTML = languageSwitcherHtml();
+        }
+      });
+      // if both slots exist, keep a single select in the header and a clone in the menu with a different id
+      const menu = document.getElementById('ui-language-slot-menu');
+      if (menu) {
+        const sel = menu.querySelector('select');
+        if (sel) { sel.id = 'ui-language-select-menu'; sel.value = getUiLanguage(); }
+      }
+    }
+
+    function getUiLanguage() {
+      try {
+        const stored = (localStorage.getItem(OSR_LANG_KEY) || '').trim();
+        if (OSR_I18N[stored]) return stored;
+      } catch (e) {}
+      return 'en';
+    }
+
+    function t(key, fallback) {
+      const lang = getUiLanguage();
+      const dict = OSR_I18N[lang] || OSR_I18N.en;
+      if (dict[key] != null) return dict[key];
+      if (OSR_I18N.en[key] != null) return OSR_I18N.en[key];
+      return fallback != null ? fallback : key;
+    }
+
+    function applyI18n(root) {
+      const scope = root || document;
+      const lang = getUiLanguage();
+      document.documentElement.setAttribute('lang', lang);
+      scope.querySelectorAll('[data-i18n]').forEach(el => {
+        const key = el.getAttribute('data-i18n');
+        if (!key) return;
+        const translated = t(key, el.getAttribute('data-i18n-fallback') || el.textContent);
+        if (el.childElementCount && el.querySelector('span[data-i18n-label], [data-i18n-label]')) {
+          const label = el.querySelector('span[data-i18n-label], [data-i18n-label]');
+          if (label) label.textContent = translated;
+        } else if (!el.childElementCount) {
+          el.textContent = translated;
+        } else {
+          const textNode = Array.from(el.childNodes).find(n => n.nodeType === 3 && n.textContent.trim());
+          if (textNode) textNode.textContent = (el.childElementCount ? ' ' : '') ? translated : translated;
+          else {
+            const span = el.querySelector('span:last-child');
+            if (span && !span.children.length) span.textContent = translated;
+          }
+        }
+      });
+      scope.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+        el.setAttribute('placeholder', t(el.getAttribute('data-i18n-placeholder'), el.getAttribute('placeholder') || ''));
+      });
+      scope.querySelectorAll('[data-i18n-title]').forEach(el => {
+        el.setAttribute('title', t(el.getAttribute('data-i18n-title'), el.getAttribute('title') || ''));
+      });
+      scope.querySelectorAll('[data-i18n-aria]').forEach(el => {
+        el.setAttribute('aria-label', t(el.getAttribute('data-i18n-aria'), el.getAttribute('aria-label') || ''));
+      });
+      const select = document.getElementById('ui-language-select');
+      if (select && select.value !== lang) select.value = lang;
+    }
+
+    function setUiLanguage(lang) {
+      const next = OSR_I18N[lang] ? lang : 'en';
+      try { localStorage.setItem(OSR_LANG_KEY, next); } catch (e) {}
+      document.documentElement.setAttribute('lang', next);
+      applyI18n(document);
+      if (typeof renderAll === 'function') renderAll();
+      if (typeof renderAdmin === 'function') renderAdmin();
+    }
+
+    function languageSwitcherHtml() {
+      const lang = getUiLanguage();
+      return `<label class="inline-flex items-center gap-1 text-[11px] text-slate-600">
+        <span class="sr-only" data-i18n="language">Language</span>
+        <select id="ui-language-select" aria-label="${t('language', 'Language')}" class="px-2 py-1.5 min-h-[36px] text-xs bg-white border border-parchment-300 rounded-lg">
+          <option value="en" ${lang === 'en' ? 'selected' : ''}>English</option>
+          <option value="hi" ${lang === 'hi' ? 'selected' : ''}>हिन्दी</option>
+          <option value="mr" ${lang === 'mr' ? 'selected' : ''}>मराठी</option>
+        </select>
+      </label>`;
+    }
+
+        const LEGACY_STORAGE_KEYS = ['genealogy_studio_shared_v1', 'genealogy_studio_v1_state'];
 
     function purgeLocalCachedRecords() {
       LEGACY_STORAGE_KEYS.forEach(k => {
@@ -73,6 +303,306 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     let firebaseApp = null;
     let auth = null;
     let db = null;
+    const PHOTO_MAX_EDGE = 1600;
+    const PHOTO_JPEG_QUALITY = 0.82;
+    const PHOTO_MAX_BYTES = 900 * 1024;
+    function getStoragePhotoPrefix() { return getArchiveDocPath() + '/portraits'; }
+
+    function getConfiguredStorageBucket() {
+      const raw = (typeof firebaseApp !== 'undefined' && firebaseApp && firebaseApp.options && firebaseApp.options.storageBucket)
+        || (window.FIREBASE_CONFIG && window.FIREBASE_CONFIG.storageBucket)
+        || 'our-shared-roots.firebasestorage.app';
+      return String(raw).replace(/^gs:\/\//, '').trim().toLowerCase();
+    }
+
+    function bucketsMatch(urlBucket, configured) {
+      const a = String(urlBucket || '').toLowerCase();
+      const b = String(configured || '').toLowerCase();
+      if (!a || !b) return false;
+      if (a === b) return true;
+      const strip = (s) => s.replace(/\.firebasestorage\.app$/, '').replace(/\.appspot\.com$/, '');
+      return strip(a) === strip(b);
+    }
+
+    function storagePathFromPortraitUrl(url) {
+      const raw = String(url || '').trim();
+      if (!raw || /^data:/i.test(raw) || /^blob:/i.test(raw)) return null;
+      let parsed;
+      try { parsed = new URL(raw); } catch (e) { return null; }
+      if (parsed.protocol !== 'https:') return null;
+      const configured = getConfiguredStorageBucket();
+      let objectPath = null;
+      const classic = parsed.pathname.match(/^\/v0\/b\/([^/]+)\/o\/(.+)$/);
+      if (classic) {
+        if (!bucketsMatch(decodeURIComponent(classic[1]), configured)) return null;
+        objectPath = decodeURIComponent(classic[2]);
+      } else if (bucketsMatch(parsed.hostname, configured) || parsed.hostname.toLowerCase().endsWith('.firebasestorage.app')) {
+        if (!bucketsMatch(parsed.hostname, configured) && parsed.hostname.toLowerCase() !== configured) return null;
+        objectPath = decodeURIComponent(parsed.pathname.replace(/^\/+/, ''));
+      }
+      if (!objectPath) return null;
+      objectPath = objectPath.split('?')[0].replace(/^\/+/, '');
+      if (objectPath.includes('..')) return null;
+      const prefix = getStoragePhotoPrefix() + '/';
+      if (!objectPath.startsWith(prefix)) return null;
+      return objectPath;
+    }
+
+    function isOurStoragePortraitUrl(url) {
+      return Boolean(storagePathFromPortraitUrl(url));
+    }
+
+    function collectPhotoUrlsFromState(stateObj) {
+      const urls = [];
+      Object.values((stateObj || {}).persons || {}).forEach((person) => {
+        if (!person) return;
+        if (person.photoUrl) urls.push(person.photoUrl);
+        (person.media || []).forEach((item) => { if (item && item.url) urls.push(item.url); });
+      });
+      return urls;
+    }
+
+    function collectOurPortraitUrlsFromState(stateObj) {
+      const set = new Set();
+      collectPhotoUrlsFromState(stateObj).forEach((url) => {
+        if (isOurStoragePortraitUrl(url)) set.add(url);
+      });
+      return set;
+    }
+
+    let deletePhotoFromStorageImpl = null;
+    function setTestStorageDelete(fn) { deletePhotoFromStorageImpl = fn; }
+
+    async function deleteOurStoragePortrait(url) {
+      if (!isOurStoragePortraitUrl(url)) return { ok: false, skipped: true };
+      const path = storagePathFromPortraitUrl(url);
+      try {
+        if (typeof deletePhotoFromStorageImpl === 'function') {
+          return await deletePhotoFromStorageImpl(url);
+        }
+        if (!path || !firebaseStorage) return { ok: false, skipped: true };
+        await deleteObject(ref(firebaseStorage, path));
+        return { ok: true, path };
+      } catch (err) {
+        const code = String((err && err.code) || '');
+        if (code === 'storage/object-not-found' || /object-not-found/i.test(code + ' ' + String(err && err.message || ''))) {
+          return { ok: true, missing: true, path };
+        }
+        console.warn('Could not delete storage portrait', path, err);
+        return { ok: false, error: err, path };
+      }
+    }
+
+    async function cleanupOrphanStoragePortraits(previousUrls, stateObj = appState) {
+      const stillUsed = collectOurPortraitUrlsFromState(stateObj);
+      const previous = previousUrls instanceof Set ? previousUrls : new Set(previousUrls || []);
+      const deleted = [];
+      for (const url of previous) {
+        if (stillUsed.has(url)) continue;
+        if (!isOurStoragePortraitUrl(url)) continue;
+        const result = await deleteOurStoragePortrait(url);
+        deleted.push({ url, result });
+      }
+      return deleted;
+    }
+
+    function scheduleOrphanPortraitCleanup(previousUrls, writeResult) {
+      return Promise.resolve(writeResult).then((res) => {
+        if (res && res.ok === false) return [];
+        return cleanupOrphanStoragePortraits(previousUrls);
+      }).catch((err) => {
+        console.warn('Portrait cleanup skipped:', err);
+        return [];
+      });
+    }
+
+
+
+    let firebaseStorage = null;
+
+    let appCheckInstance = null;
+
+    function getAppCheckOptions() {
+      const cfg = window.OSR_APPCHECK || {};
+      const siteKey = String(cfg.siteKey || window.FIREBASE_CONFIG?.appCheckSiteKey || '').trim();
+      return { siteKey, enterprise: Boolean(cfg.enterprise) };
+    }
+
+    function isAppCheckConfigured() {
+      return Boolean(getAppCheckOptions().siteKey);
+    }
+
+    function startAppCheckIfConfigured(app) {
+      const { siteKey, enterprise } = getAppCheckOptions();
+      if (!app || !siteKey) {
+        appCheckInstance = null;
+        return null;
+      }
+      try {
+        const provider = enterprise ? new ReCaptchaEnterpriseProvider(siteKey) : new ReCaptchaV3Provider(siteKey);
+        appCheckInstance = initializeAppCheck(app, { provider, isTokenAutoRefreshEnabled: true });
+        return appCheckInstance;
+      } catch (err) {
+        console.error('App Check failed to start', err);
+        appCheckInstance = null;
+        return null;
+      }
+    }
+
+    let uploadPhotoToStorageImpl = null;
+
+    function isDataImageUrl(url) {
+      return /^data:image\//i.test(String(url || '').trim());
+    }
+
+    function collectInlinePhotos(stateObj) {
+      const state = stateObj || appState;
+      const found = [];
+      Object.values(state.persons || {}).forEach(person => {
+        if (!person) return;
+        if (isDataImageUrl(person.photoUrl)) {
+          found.push({ personId: person.id, field: 'photoUrl' });
+        }
+        (person.media || []).forEach((item, index) => {
+          if (item && isDataImageUrl(item.url)) {
+            found.push({ personId: person.id, field: 'media', index, id: item.id });
+          }
+        });
+      });
+      return found;
+    }
+
+    function dataUrlToBlob(dataUrl) {
+      const parts = String(dataUrl || '').split(',');
+      const head = parts[0] || '';
+      const body = parts[1] || '';
+      const mime = (head.match(/data:([^;]+)/i) || [])[1] || 'image/jpeg';
+      const binary = atob(body);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return new Blob([bytes], { type: mime });
+    }
+
+    async function compressImageBlob(blob, opts) {
+      const maxEdge = (opts && opts.maxEdge) || PHOTO_MAX_EDGE;
+      const qualityStart = (opts && opts.quality) || PHOTO_JPEG_QUALITY;
+      if (!blob) throw new Error('No image to compress.');
+      let bitmap;
+      if (typeof createImageBitmap === 'function') {
+        bitmap = await createImageBitmap(blob);
+      } else {
+        bitmap = await new Promise((resolve, reject) => {
+          const url = URL.createObjectURL(blob);
+          const img = new Image();
+          img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+          img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read that image.')); };
+          img.src = url;
+        });
+      }
+      try {
+        let width = bitmap.width;
+        let height = bitmap.height;
+        if (width > maxEdge || height > maxEdge) {
+          const scale = maxEdge / Math.max(width, height);
+          width = Math.max(1, Math.round(width * scale));
+          height = Math.max(1, Math.round(height * scale));
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(bitmap, 0, 0, width, height);
+        let quality = qualityStart;
+        let out = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+        while (out && out.size > PHOTO_MAX_BYTES && quality > 0.5) {
+          quality = Math.max(0.5, quality - 0.08);
+          out = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+        }
+        if (!out) throw new Error('Could not compress that image.');
+        out._width = width;
+        out._height = height;
+        return out;
+      } finally {
+        if (bitmap && typeof bitmap.close === 'function') bitmap.close();
+      }
+    }
+
+    function setTestStorageUpload(fn) {
+      uploadPhotoToStorageImpl = fn || null;
+    }
+
+    async function uploadPortraitBlob(personId, blob) {
+      if (typeof uploadPhotoToStorageImpl === 'function') {
+        return uploadPhotoToStorageImpl(personId, blob);
+      }
+      if (!firebaseStorage) {
+        throw new Error('Photo storage is not available yet. Enable Firebase Storage in the Firebase console, deploy storage.rules, then reload.');
+      }
+      const safeId = String(personId || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const name = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}.jpg`;
+      const path = `${getStoragePhotoPrefix()}/${safeId}/${name}`;
+      const storageRef = ref(firebaseStorage, path);
+      await uploadBytes(storageRef, blob, { contentType: 'image/jpeg', cacheControl: 'public,max-age=31536000' });
+      return getDownloadURL(storageRef);
+    }
+
+    async function saveUploadedPortrait(personId, fileOrBlob, opts) {
+      const options = opts || {};
+      const compressed = await compressImageBlob(fileOrBlob);
+      const url = await uploadPortraitBlob(personId, compressed);
+      const caption = options.caption || '';
+      const setAsAvatar = options.setAsAvatar !== false;
+      const summary = 'Added portrait photo';
+      const run = (state) => {
+        const person = state.persons[personId];
+        if (!person) throw new Error('That person is no longer in the tree.');
+        person.media = person.media || [];
+        person.media.push({ id: generateId('med'), url, caption, source: 'storage' });
+        if (setAsAvatar || !person.photoUrl || isDataImageUrl(person.photoUrl)) person.photoUrl = url;
+      };
+      if (typeof commitMutation === 'function') commitMutation(summary, run, 'Tree Data');
+      else if (typeof commitTreeDataMutation === 'function') await commitTreeDataMutation(summary, run);
+      else throw new Error('Could not save the photo to the tree.');
+      return url;
+    }
+
+    async function migrateInlinePhotos(stateObj, progressFn) {
+      const state = stateObj || appState;
+      const found = collectInlinePhotos(state);
+      if (!found.length) return { ok: true, migrated: 0, failed: 0, total: 0 };
+      const replacements = [];
+      let failed = 0;
+      for (let i = 0; i < found.length; i++) {
+        const item = found[i];
+        if (progressFn) progressFn(i, found.length, item);
+        try {
+          const person = state.persons[item.personId];
+          const raw = item.field === 'photoUrl' ? person.photoUrl : (person.media[item.index] && person.media[item.index].url);
+          const blob = dataUrlToBlob(raw);
+          const compressed = await compressImageBlob(blob);
+          const url = await uploadPortraitBlob(item.personId, compressed);
+          replacements.push({ ...item, url });
+        } catch (err) {
+          failed += 1;
+          console.error('Photo migration failed', err);
+        }
+      }
+      if (replacements.length) {
+        const run = (s) => {
+          replacements.forEach(item => {
+            const person = s.persons[item.personId];
+            if (!person) return;
+            if (item.field === 'photoUrl') person.photoUrl = item.url;
+            else if (person.media && person.media[item.index]) person.media[item.index].url = item.url;
+          });
+        };
+        if (typeof commitMutation === 'function') commitMutation(`Uploaded ${replacements.length} embedded photo${replacements.length === 1 ? '' : 's'} to Storage`, run, 'Tree Data');
+        else if (typeof commitTreeDataMutation === 'function') await commitTreeDataMutation(`Uploaded ${replacements.length} embedded photos to Storage`, run);
+        else run(state);
+      }
+      return { ok: failed === 0, migrated: replacements.length, failed, total: found.length };
+    }
+
     let firebaseUser = null;
     let unsubscribeArchive = null;
     let unsubscribeLog = null;
@@ -120,7 +650,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     function describeBlockedImageUrl(url) {
       const s = String(url || '').trim();
       if (!s) return '';
-      if (/^data:/i.test(s)) return 'This image is stored as an embedded data URL and is no longer displayed. Replace it with an https:// link.';
+      if (/^data:/i.test(s)) return 'This image is stored as an embedded data URL and is no longer displayed. Use Take photo / Choose from gallery, or upload embedded photos from the Admin Data tab.';
       return 'Only https:// image links are displayed. This address was skipped.';
     }
 
@@ -230,8 +760,8 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       if (split.qualifier === 'BET') {
         const range = split.body.match(/^(.*?)\s+AND\s+(.*)$/i);
         if (range) {
-          const start = parseOneDateBody(range[1], raw, 'BET');
-          const end = parseOneDateBody(range[2], raw, 'BET');
+          const start = parseRangeSide(range[1], raw);
+          const end = parseRangeSide(range[2], raw);
           if (start || end) {
             return { ...(start || end), qualifier: 'BET', rangeStart: start, rangeEnd: end, raw };
           }
@@ -279,6 +809,640 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       return qualifierPrefix(parts.qualifier) + core;
     }
 
+
+    const UNION_STATUSES = ['married', 'divorced', 'separated', 'widowed'];
+    function normalizeUnionStatus(status) {
+      const s = String(status || '').trim().toLowerCase();
+      if (s === 'divorced' || s === 'separated' || s === 'widowed') return s;
+      return 'married';
+    }
+    function unionIsFormer(status) {
+      const s = normalizeUnionStatus(status);
+      return s === 'divorced' || s === 'separated' || s === 'widowed';
+    }
+    function unionShowsDivorceFields(status) {
+      const s = normalizeUnionStatus(status);
+      return s === 'divorced' || s === 'separated';
+    }
+    function unionStatusLabel(status) {
+      const s = normalizeUnionStatus(status);
+      return { married: 'Married', divorced: 'Divorced', separated: 'Separated', widowed: 'Widowed' }[s];
+    }
+    function unionSpouseHeading(status) {
+      return unionIsFormer(status) ? 'Former spouse' : 'Spouse';
+    }
+    function unionFactTitle(status) {
+      const s = normalizeUnionStatus(status);
+      if (s === 'divorced') return 'Divorce / Union:';
+      if (s === 'separated') return 'Separation:';
+      if (s === 'widowed') return 'Widowed:';
+      return 'Marriage to:';
+    }
+    function unionLineStyle(status) {
+      const s = normalizeUnionStatus(status);
+      if (s === 'divorced') return { stroke: '#DC2626', dash: '5,4' };
+      if (s === 'separated') return { stroke: '#D97706', dash: '1.5,3.5' };
+      if (s === 'widowed') return { stroke: '#6B7280', dash: '' };
+      return { stroke: '#94A3B8', dash: '' };
+    }
+    function unionStatusOptionsHtml(selected) {
+      const cur = normalizeUnionStatus(selected);
+      return UNION_STATUSES.map((s) => `<option value="${s}"${s === cur ? ' selected' : ''}>${unionStatusLabel(s)}</option>`).join('');
+    }
+    function linkageOptionsHtml(selected) {
+      const cur = normalizeLinkage(selected);
+      return `<option value="biological"${cur === 'biological' ? ' selected' : ''}>Biological</option>`
+        + `<option value="adoptive"${cur === 'adoptive' ? ' selected' : ''}>Adopted</option>`
+        + `<option value="step"${cur === 'step' ? ' selected' : ''}>Step</option>`
+        + `<option value="foster"${cur === 'foster' ? ' selected' : ''}>Foster</option>`
+        + `<option value="guardian"${cur === 'guardian' ? ' selected' : ''}>Guardian</option>`;
+    }
+
+    const QE_PREFIX_OPTIONS = ['', 'Mr.', 'Mrs.', 'Ms.', 'Miss', 'Dr.', 'Prof.', 'Shri', 'Smt.', 'Sri'];
+    const QE_SUFFIX_OPTIONS = ['', 'Jr.', 'Sr.', 'II', 'III', 'IV', 'Ph.D.', 'M.D.'];
+    const QE_MODE_OPTIONS = [
+      { value: 'exact', label: 'Exactly' },
+      { value: 'BEF', label: 'Before' },
+      { value: 'AFT', label: 'After' },
+      { value: 'ABT', label: 'Circa' },
+      { value: 'unsure', label: 'Unsure' },
+      { value: 'BET', label: 'Between' },
+      { value: 'free', label: 'Free text' }
+    ];
+    const QE_SIDE_OPTIONS = [
+      { value: 'exact', label: 'Exactly' },
+      { value: 'BEF', label: 'Before' },
+      { value: 'AFT', label: 'After' },
+      { value: 'ABT', label: 'Circa' },
+      { value: 'unsure', label: 'Unsure' }
+    ];
+    let quickEditPersonId = null;
+
+    function quickEditIsOpen() {
+      const modal = document.getElementById('modal-quick-edit');
+      return Boolean(modal && !modal.classList.contains('hidden'));
+    }
+
+    function parseRangeSide(sideRaw, wholeRaw) {
+      const text = String(sideRaw || '').trim();
+      if (!text) return null;
+      const split = splitDateQualifier(text);
+      const q = split.qualifier === 'BET' ? null : split.qualifier;
+      return parseOneDateBody(split.body || text, wholeRaw, q);
+    }
+
+    function qeSideQual(q) {
+      if (q === 'ABT' || q === 'BEF' || q === 'AFT') return q;
+      return 'exact';
+    }
+
+    function dateStringToQe(dateStr) {
+      const raw = typeof dateStr === 'string' ? dateStr.trim() : '';
+      const empty = {
+        mode: 'exact', startQ: 'exact', year: '', month: '', day: '',
+        endQ: 'exact', endYear: '', endMonth: '', endDay: '', free: raw
+      };
+      if (!raw) return empty;
+      const parsed = parseFlexibleDateParts(raw);
+      if (!parsed) return { ...empty, mode: 'free', free: raw };
+      const ymd = (side) => ({
+        year: side && side.year ? side.year : '',
+        month: (side && side.month != null) ? (side.month + 1) : '',
+        day: (side && side.day != null) ? side.day : ''
+      });
+      if (parsed.qualifier === 'BET' && (parsed.rangeStart || parsed.rangeEnd)) {
+        const s = ymd(parsed.rangeStart);
+        const e = ymd(parsed.rangeEnd);
+        return {
+          mode: 'BET',
+          startQ: qeSideQual(parsed.rangeStart && parsed.rangeStart.qualifier),
+          year: s.year, month: s.month, day: s.day,
+          endQ: qeSideQual(parsed.rangeEnd && parsed.rangeEnd.qualifier),
+          endYear: e.year, endMonth: e.month, endDay: e.day,
+          free: raw
+        };
+      }
+      const core = ymd(parsed);
+      if (parsed.qualifier === 'ABT' || parsed.qualifier === 'BEF' || parsed.qualifier === 'AFT') {
+        return { ...empty, mode: parsed.qualifier, startQ: parsed.qualifier, year: core.year, month: core.month, day: core.day, free: raw };
+      }
+      if (parsed.year || parsed.month != null || parsed.day != null) {
+        return { ...empty, mode: 'exact', year: core.year, month: core.month, day: core.day, free: raw };
+      }
+      return { ...empty, mode: 'free', free: raw };
+    }
+
+    function formatQeYmd(q, y, m, d) {
+      const year = parseInt(y, 10);
+      const month = parseInt(m, 10);
+      const day = parseInt(d, 10);
+      const hasY = Number.isFinite(year) && year > 0;
+      const hasM = Number.isFinite(month) && month >= 1 && month <= 12;
+      const hasD = Number.isFinite(day) && day >= 1 && day <= 31;
+      if (!hasY) return '';
+      let body = '';
+      if (hasD && hasM) body = `${MONTH_NAMES_SHORT[month - 1]} ${day} ${year}`;
+      else if (hasM) body = `${MONTH_NAMES_SHORT[month - 1]} ${year}`;
+      else body = String(year);
+      const qual = q === 'unsure' ? 'ABT' : q;
+      if (qual === 'ABT' || qual === 'BEF' || qual === 'AFT') return `${qual} ${body}`;
+      return body;
+    }
+
+    function qeToDateString(parts) {
+      if (!parts) return '';
+      if (parts.mode === 'free') return String(parts.free || '').trim();
+      if (parts.mode === 'BET') {
+        const a = formatQeYmd(parts.startQ, parts.year, parts.month, parts.day);
+        const b = formatQeYmd(parts.endQ, parts.endYear, parts.endMonth, parts.endDay);
+        if (!a && !b) return '';
+        if (!a) return b;
+        if (!b) return a;
+        return `BET ${a} AND ${b}`;
+      }
+      const q = parts.mode === 'unsure' ? 'ABT' : parts.mode;
+      return formatQeYmd(q === 'exact' ? 'exact' : q, parts.year, parts.month, parts.day);
+    }
+
+    function qeOptionList(options, selected) {
+      const extra = (selected && !options.includes(selected)) ? [selected] : [];
+      return [...options, ...extra].map((opt) => {
+        const label = opt || '';
+        const sel = opt === selected ? ' selected' : '';
+        return `<option value="${escapeAttr(opt)}"${sel}>${escapeHtml(label)}</option>`;
+      }).join('');
+    }
+
+    function qeSelectOptions(items, selected) {
+      return items.map((item) => {
+        const sel = item.value === selected ? ' selected' : '';
+        return `<option value="${escapeAttr(item.value)}"${sel}>${escapeHtml(item.label)}</option>`;
+      }).join('');
+    }
+
+    function qeMonthOptions(selected) {
+      const val = selected ? String(selected) : '';
+      const months = MONTH_NAMES_SHORT.map((name, i) => {
+        const v = String(i + 1);
+        return `<option value="${v}"${v === val ? ' selected' : ''}>${name}</option>`;
+      }).join('');
+      return `<option value="">Month</option>${months}`;
+    }
+
+    function qeDateControlsHtml(name, dateStr) {
+      const p = dateStringToQe(dateStr);
+      const isFree = p.mode === 'free';
+      const isBet = p.mode === 'BET';
+      return `
+        <div class="space-y-1.5" data-qe-date="${escapeAttr(name)}">
+          <select data-qe-mode aria-label="${escapeAttr(name + ' qualifier')}" class="px-2 py-1.5 text-xs bg-white border border-stone-300 rounded-lg max-w-full">
+            ${qeSelectOptions(QE_MODE_OPTIONS, p.mode)}
+          </select>
+          <div data-qe-mdy class="${isFree ? 'hidden' : ''} flex flex-wrap gap-1.5">
+            <select data-qe-start-q aria-label="${escapeAttr(name + ' start qualifier')}" class="${isBet ? '' : 'hidden '}px-2 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">${qeSelectOptions(QE_SIDE_OPTIONS, p.startQ)}</select>
+            <select data-qe-month aria-label="${escapeAttr(name + ' month')}" class="px-2 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">${qeMonthOptions(p.month)}</select>
+            <input data-qe-day type="number" inputmode="numeric" min="1" max="31" placeholder="Day" aria-label="${escapeAttr(name + ' day')}" value="${escapeAttr(p.day)}" class="w-16 px-2 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
+            <input data-qe-year type="number" inputmode="numeric" min="1" max="9999" placeholder="Year" aria-label="${escapeAttr(name + ' year')}" value="${escapeAttr(p.year)}" class="w-20 px-2 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
+          </div>
+          <input data-qe-free type="text" placeholder="Date as written" aria-label="${escapeAttr(name + ' free text')}" value="${escapeAttr(p.free)}" class="${isFree ? '' : 'hidden '}w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
+          <div data-qe-and class="${isBet ? '' : 'hidden'} space-y-1.5">
+            <div class="text-[11px] font-medium text-slate-600">And</div>
+            <div class="flex flex-wrap gap-1.5">
+              <select data-qe-end-q aria-label="${escapeAttr(name + ' end qualifier')}" class="px-2 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">${qeSelectOptions(QE_SIDE_OPTIONS, p.endQ)}</select>
+              <select data-qe-end-month aria-label="${escapeAttr(name + ' end month')}" class="px-2 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">${qeMonthOptions(p.endMonth)}</select>
+              <input data-qe-end-day type="number" inputmode="numeric" min="1" max="31" placeholder="Day" aria-label="${escapeAttr(name + ' end day')}" value="${escapeAttr(p.endDay)}" class="w-16 px-2 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
+              <input data-qe-end-year type="number" inputmode="numeric" min="1" max="9999" placeholder="Year" aria-label="${escapeAttr(name + ' end year')}" value="${escapeAttr(p.endYear)}" class="w-20 px-2 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
+            </div>
+          </div>
+        </div>`;
+    }
+
+    function qeReadDate(name) {
+      const box = document.querySelector(`#modal-quick-edit [data-qe-date="${name}"]`);
+      if (!box) return '';
+      return qeToDateString({
+        mode: box.querySelector('[data-qe-mode]')?.value || 'exact',
+        startQ: box.querySelector('[data-qe-start-q]')?.value || 'exact',
+        year: box.querySelector('[data-qe-year]')?.value || '',
+        month: box.querySelector('[data-qe-month]')?.value || '',
+        day: box.querySelector('[data-qe-day]')?.value || '',
+        endQ: box.querySelector('[data-qe-end-q]')?.value || 'exact',
+        endYear: box.querySelector('[data-qe-end-year]')?.value || '',
+        endMonth: box.querySelector('[data-qe-end-month]')?.value || '',
+        endDay: box.querySelector('[data-qe-end-day]')?.value || '',
+        free: box.querySelector('[data-qe-free]')?.value || ''
+      });
+    }
+
+    function qeSyncDateUi(box) {
+      if (!box) return;
+      const mode = box.querySelector('[data-qe-mode]')?.value || 'exact';
+      const isFree = mode === 'free';
+      const isBet = mode === 'BET';
+      const startQ = box.querySelector('[data-qe-start-q]');
+      if (startQ) startQ.classList.toggle('hidden', !isBet);
+      box.querySelector('[data-qe-mdy]')?.classList.toggle('hidden', isFree);
+      const free = box.querySelector('[data-qe-free]');
+      if (free) free.classList.toggle('hidden', !isFree);
+      box.querySelector('[data-qe-and]')?.classList.toggle('hidden', !isBet);
+    }
+
+    function qeFillAffixSelect(sel, options, current) {
+      if (!sel) return;
+      sel.innerHTML = qeOptionList(options, current || '');
+      sel.value = current || '';
+    }
+
+    function qeSetAvatar(person) {
+      const wrap = document.getElementById('qe-avatar-wrap');
+      const img = document.getElementById('qe-avatar-img');
+      const svg = document.getElementById('qe-avatar-svg');
+      if (!wrap || !img || !svg) return;
+      wrap.className = person.sex === 'F'
+        ? 'w-16 h-16 rounded-full border-2 border-rose-300 bg-rose-50/70 flex items-center justify-center overflow-hidden shrink-0'
+        : person.sex === 'M'
+          ? 'w-16 h-16 rounded-full border-2 border-sky-300 bg-sky-50/70 flex items-center justify-center overflow-hidden shrink-0'
+          : 'w-16 h-16 rounded-full border-2 border-slate-300 bg-slate-100 flex items-center justify-center overflow-hidden shrink-0';
+      const safePortrait = person.photoUrl ? safeImageUrl(person.photoUrl) : '';
+      if (safePortrait) {
+        img.src = safePortrait;
+        img.classList.remove('hidden');
+        svg.classList.add('hidden');
+        svg.innerHTML = '';
+      } else {
+        img.removeAttribute('src');
+        img.classList.add('hidden');
+        svg.classList.remove('hidden');
+        svg.innerHTML = getSilhouetteSvgInner(person.sex);
+      }
+    }
+
+    function qeSpouseBlockHtml(person) {
+      const unions = unionsForPerson(person.id);
+      if (!unions.length) return '';
+      return unions.map((fam) => {
+        const spouseId = [fam.partner1Id, fam.partner2Id].find((id) => id && id !== person.id);
+        const spouse = spouseId ? appState.persons[spouseId] : null;
+        const status = normalizeUnionStatus(fam.status);
+        const heading = unionSpouseHeading(status);
+        const name = spouse ? getDisplayNameWithMaiden(spouse) : 'Unknown';
+        const showEnd = unionShowsDivorceFields(status);
+        return `
+          <div class="space-y-2 rounded-xl border border-stone-200 bg-stone-50 p-3" data-qe-union="${escapeAttr(fam.id)}">
+            <div class="text-[11px] font-bold uppercase tracking-wider text-slate-600" data-qe-union-heading>${escapeHtml(heading)}</div>
+            <div class="text-sm font-medium text-slate-900">${escapeHtml(name)}</div>
+            <label class="block text-[11px] font-medium text-slate-600 mb-1" for="qe-union-status-${escapeAttr(fam.id)}">Status</label>
+            <select id="qe-union-status-${escapeAttr(fam.id)}" data-qe-union-status class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
+              ${unionStatusOptionsHtml(status)}
+            </select>
+            <div class="text-[11px] font-medium text-slate-600">Marriage date</div>
+            ${qeDateControlsHtml('marr-' + fam.id, fam.marriageDate || '')}
+            <label class="block text-[11px] font-medium text-slate-600 mb-1" for="qe-marr-place-${escapeAttr(fam.id)}">Marriage place</label>
+            <input id="qe-marr-place-${escapeAttr(fam.id)}" data-qe-union-place type="text" autocomplete="off" value="${escapeAttr(fam.marriagePlace || '')}" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
+            <div data-qe-divorce-fields class="${showEnd ? '' : 'hidden'} space-y-1.5">
+              <div class="text-[11px] font-medium text-slate-600">End date</div>
+              ${qeDateControlsHtml('div-' + fam.id, fam.divorceDate || '')}
+              <label class="block text-[11px] font-medium text-slate-600 mb-1" for="qe-div-place-${escapeAttr(fam.id)}">End place</label>
+              <input id="qe-div-place-${escapeAttr(fam.id)}" data-qe-divorce-place type="text" autocomplete="off" value="${escapeAttr(fam.divorcePlace || '')}" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
+            </div>
+            ${qeChildLinkageRowsHtml(fam)}
+          </div>`;
+      }).join('');
+    }
+
+    function qeChildLinkageRowsHtml(fam) {
+      const kids = (fam.children || []).filter((c) => c && appState.persons[c.personId]);
+      if (!kids.length) return '';
+      return `
+            <div class="space-y-2">
+              <div class="text-[11px] font-bold uppercase tracking-wider text-slate-600">Children</div>
+              ${kids.map((c) => {
+                const child = appState.persons[c.personId];
+                const selId = 'qe-child-link-' + fam.id + '-' + child.id;
+                return `
+                <div class="flex items-center justify-between gap-2">
+                  <label class="min-w-0 text-xs font-medium text-slate-900 truncate" for="${escapeAttr(selId)}">${escapeHtml(getDisplayNameWithMaiden(child))}</label>
+                  <select id="${escapeAttr(selId)}" data-qe-linkage data-qe-linkage-fam="${escapeAttr(fam.id)}" data-qe-linkage-child="${escapeAttr(child.id)}" aria-label="Parent link type for ${escapeAttr(getDisplayName(child))}" class="shrink-0 max-w-[7.5rem] px-1.5 py-1 text-[11px] bg-white border border-stone-300 rounded-lg">
+                    ${linkageOptionsHtml(c.linkage)}
+                  </select>
+                </div>`;
+              }).join('')}
+            </div>`;
+    }
+
+    function qeParentLinksHtml(person) {
+      const blocks = [];
+      Object.values(appState.families || {}).forEach((f) => {
+        const selfChild = (f.children || []).find((c) => c && c.personId === person.id);
+        if (!selfChild) return;
+        const p1 = f.partner1Id && appState.persons[f.partner1Id];
+        const p2 = f.partner2Id && appState.persons[f.partner2Id];
+        const names = [p1, p2].filter(Boolean).map((p) => getDisplayNameWithMaiden(p));
+        const label = names.length ? names.join(' and ') : 'Parents';
+        const selId = 'qe-parent-link-' + f.id;
+        blocks.push(`
+          <div class="space-y-1.5 rounded-xl border border-stone-200 bg-stone-50 p-3" data-qe-parent-fam="${escapeAttr(f.id)}">
+            <div class="text-[11px] font-bold uppercase tracking-wider text-slate-600">Parents</div>
+            <div class="text-sm font-medium text-slate-900">${escapeHtml(label)}</div>
+            <label class="block text-[11px] font-medium text-slate-600 mb-1" for="${escapeAttr(selId)}">Relationship</label>
+            <select id="${escapeAttr(selId)}" data-qe-linkage data-qe-linkage-fam="${escapeAttr(f.id)}" data-qe-linkage-child="${escapeAttr(person.id)}" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
+              ${linkageOptionsHtml(selfChild.linkage)}
+            </select>
+          </div>`);
+      });
+      return blocks.join('');
+    }
+
+    function qeSyncLivingUi() {
+      const living = document.querySelector('#form-quick-edit input[name="qeLiving"]:checked')?.value !== 'deceased';
+      document.getElementById('qe-living-fields')?.classList.toggle('hidden', !living);
+      document.getElementById('qe-death-fields')?.classList.toggle('hidden', living);
+    }
+
+    function qeSyncBirthHidden() {
+      const hidden = document.getElementById('qe-birth-date-hidden');
+      if (hidden) hidden.value = qeReadDate('birth');
+    }
+
+    function qeEnsureEvent(person, type) {
+      person.events = person.events || [];
+      let ev = person.events.find((item) => item && item.type === type);
+      if (!ev) {
+        ev = { id: generateId('ev'), type, date: '', place: '' };
+        person.events.push(ev);
+      }
+      return ev;
+    }
+
+    function qeClearEmptyEvent(person, type) {
+      if (!person.events) return;
+      const ev = person.events.find((item) => item && item.type === type);
+      if (!ev) return;
+      const hasHindu = ev.tithi || ev.paksha || ev.masa;
+      if (!ev.date && !ev.place && !ev.cause && !hasHindu) {
+        person.events = person.events.filter((item) => item !== ev);
+      }
+    }
+
+    function fillQuickEditForm(person) {
+      const birt = (person.events || []).find((e) => e && e.type === 'BIRT') || {};
+      const deat = (person.events || []).find((e) => e && e.type === 'DEAT') || {};
+      const buri = (person.events || []).find((e) => e && e.type === 'BURI') || {};
+      document.getElementById('qe-name-heading').textContent = getDisplayNameWithMaiden(person);
+      qeSetAvatar(person);
+      const sex = person.sex === 'M' || person.sex === 'F' ? person.sex : 'U';
+      document.querySelectorAll('#form-quick-edit input[name="qeSex"]').forEach((el) => { el.checked = el.value === sex; });
+      document.getElementById('qe-given').value = person.given || '';
+      document.getElementById('qe-surname').value = person.surname || '';
+      document.getElementById('qe-alt').value = person.altName || '';
+      qeFillAffixSelect(document.getElementById('qe-prefix'), QE_PREFIX_OPTIONS, person.prefix || '');
+      qeFillAffixSelect(document.getElementById('qe-suffix'), QE_SUFFIX_OPTIONS, person.suffix || '');
+      document.getElementById('qe-birth-date').innerHTML = qeDateControlsHtml('birth', birt.date || '');
+      document.getElementById('qe-birth-place').value = birt.place || '';
+      qeSyncBirthHidden();
+      const living = person.livingStatus === 'deceased' ? 'deceased' : 'living';
+      document.querySelectorAll('#form-quick-edit input[name="qeLiving"]').forEach((el) => { el.checked = el.value === living; });
+      document.getElementById('qe-email').value = (person.emails && person.emails[0]) || '';
+      document.getElementById('qe-death-date').innerHTML = qeDateControlsHtml('death', deat.date || '');
+      document.getElementById('qe-death-place').value = deat.place || '';
+      document.getElementById('qe-death-cause').value = deat.cause || '';
+      document.getElementById('qe-burial-place').value = buri.place || '';
+      const parentsEl = document.getElementById('qe-parents');
+      if (parentsEl) parentsEl.innerHTML = qeParentLinksHtml(person);
+      document.getElementById('qe-spouses').innerHTML = qeSpouseBlockHtml(person);
+      qeSyncLivingUi();
+    }
+
+    function setQuickEditEditable(editable) {
+      const form = document.getElementById('form-quick-edit');
+      if (!form) return;
+      form.querySelectorAll('input, select, textarea').forEach((el) => { el.disabled = !editable; });
+      const ok = document.getElementById('btn-qe-ok');
+      const invite = document.getElementById('btn-qe-invite');
+      if (ok) ok.classList.toggle('hidden', !editable);
+      if (invite) invite.disabled = !editable;
+    }
+
+    function openQuickEditModal(personId) {
+      const id = personId || appState.selectedPersonId;
+      const person = id && appState.persons[id];
+      const modal = document.getElementById('modal-quick-edit');
+      if (!person || !modal) return;
+      appState.selectedPersonId = id;
+      quickEditPersonId = id;
+      fillQuickEditForm(person);
+      const editable = canEditTree();
+      setQuickEditEditable(editable);
+      modal.classList.remove('hidden');
+      applyEditLockUi();
+      const focusEl = document.getElementById('qe-given');
+      if (focusEl && editable) {
+        try { focusEl.focus(); } catch (err) {}
+      }
+    }
+
+    function closeQuickEditModal() {
+      const modal = document.getElementById('modal-quick-edit');
+      if (!modal || modal.classList.contains('hidden')) {
+        quickEditPersonId = null;
+        return;
+      }
+      modal.classList.add('hidden');
+      quickEditPersonId = null;
+      applyEditLockUi();
+    }
+
+    function saveQuickEdit() {
+      if (!canEditTree()) return;
+      const id = quickEditPersonId || appState.selectedPersonId;
+      if (!id || !appState.persons[id]) return;
+      qeSyncBirthHidden();
+      const given = (document.getElementById('qe-given')?.value || '').trim();
+      const surname = (document.getElementById('qe-surname')?.value || '').trim();
+      const altName = (document.getElementById('qe-alt')?.value || '').trim();
+      const prefix = (document.getElementById('qe-prefix')?.value || '').trim();
+      const suffix = (document.getElementById('qe-suffix')?.value || '').trim();
+      const sex = document.querySelector('#form-quick-edit input[name="qeSex"]:checked')?.value || 'U';
+      const livingStatus = document.querySelector('#form-quick-edit input[name="qeLiving"]:checked')?.value || 'living';
+      const birthDate = qeReadDate('birth');
+      const birthPlace = (document.getElementById('qe-birth-place')?.value || '').trim();
+      const form = document.getElementById('form-quick-edit');
+      const email = (document.getElementById('qe-email')?.value || '').trim().toLowerCase();
+      const deathDate = qeReadDate('death');
+      const deathPlace = (document.getElementById('qe-death-place')?.value || '').trim();
+      const deathCause = (document.getElementById('qe-death-cause')?.value || '').trim();
+      const burialPlace = (document.getElementById('qe-burial-place')?.value || '').trim();
+      const unions = [...document.querySelectorAll('#qe-spouses [data-qe-union]')].map((block) => {
+        const id = block.getAttribute('data-qe-union');
+        const status = normalizeUnionStatus(block.querySelector('[data-qe-union-status]')?.value);
+        return {
+          id,
+          status,
+          marriageDate: qeReadDate('marr-' + id),
+          marriagePlace: (block.querySelector('[data-qe-union-place]')?.value || '').trim(),
+          divorceDate: qeReadDate('div-' + id),
+          divorcePlace: (block.querySelector('[data-qe-divorce-place]')?.value || '').trim()
+        };
+      });
+      const linkages = [...document.querySelectorAll('#form-quick-edit [data-qe-linkage]')].map((el) => ({
+        famId: el.getAttribute('data-qe-linkage-fam'),
+        childId: el.getAttribute('data-qe-linkage-child'),
+        linkage: normalizeLinkage(el.value)
+      }));
+      commitMutation('Updated profile', (s) => {
+        const p = s.persons[id];
+        if (!p) return;
+        p.given = given;
+        p.surname = surname;
+        p.altName = altName;
+        p.prefix = prefix;
+        p.suffix = suffix;
+        if (!p.prefix) delete p.prefix;
+        if (!p.suffix) delete p.suffix;
+        p.sex = sex;
+        p.livingStatus = livingStatus;
+        const birt = qeEnsureEvent(p, 'BIRT');
+        birt.date = birthDate;
+        birt.place = birthPlace;
+        qeClearEmptyEvent(p, 'BIRT');
+        if (livingStatus === 'living') {
+          if (email) {
+            p.emails = p.emails || [];
+            if (!p.emails.some((em) => em.toLowerCase() === email)) p.emails.unshift(email);
+            else p.emails = [email, ...p.emails.filter((em) => em.toLowerCase() !== email)];
+          }
+        } else {
+          const deat = qeEnsureEvent(p, 'DEAT');
+          deat.date = deathDate;
+          deat.place = deathPlace;
+          if (deathCause) deat.cause = deathCause; else delete deat.cause;
+          if (burialPlace) {
+            const buri = qeEnsureEvent(p, 'BURI');
+            buri.place = burialPlace;
+          } else {
+            qeClearEmptyEvent(p, 'BURI');
+          }
+          qeClearEmptyEvent(p, 'DEAT');
+        }
+        unions.forEach((row) => {
+          const fam = s.families[row.id];
+          if (!fam) return;
+          fam.status = row.status;
+          fam.marriageDate = row.marriageDate;
+          fam.marriagePlace = row.marriagePlace;
+          if (unionShowsDivorceFields(row.status)) {
+            fam.divorceDate = row.divorceDate;
+            fam.divorcePlace = row.divorcePlace;
+          }
+        });
+        linkages.forEach((row) => {
+          const family = s.families[row.famId];
+          if (!family || !row.childId) return;
+          family.children = family.children || [];
+          const rec = family.children.find((c) => c.personId === row.childId);
+          if (rec) rec.linkage = row.linkage;
+          else family.children.push({ personId: row.childId, linkage: row.linkage });
+        });
+      });
+      closeQuickEditModal();
+      renderAll();
+    }
+
+    function qeInviteToSite() {
+      if (!canEditTree()) return;
+      const id = quickEditPersonId || appState.selectedPersonId;
+      const person = id && appState.persons[id];
+      const newEmail = (document.getElementById('qe-email')?.value || '').trim().toLowerCase();
+      if (!person) return;
+      if (!newEmail) { showToast('Enter an email address first.'); return; }
+      const manage = canManageAccess();
+      const emailRole = manage ? 'view' : null;
+      const summary = manage
+        ? `Linked Google user ${newEmail} (${emailRole})`
+        : `Added email ${newEmail} (sign-in access is granted only by the Super Admin)`;
+      commitMutation(summary, (s) => {
+        const p = s.persons[id];
+        if (!p) return;
+        p.emails = p.emails || [];
+        if (!p.emails.some((em) => em.toLowerCase() === newEmail)) p.emails.push(newEmail);
+        if (!canManageAccess(s)) return;
+        const perms = s.accessControl.permissions || [];
+        const existing = perms.find((pm) => pm.email.toLowerCase() === newEmail);
+        if (existing) {
+          if (existing.role !== 'super_admin') existing.role = emailRole;
+          existing.personId = p.id;
+        } else {
+          perms.push({
+            id: generateId('perm'),
+            email: newEmail,
+            personId: p.id,
+            role: isSuperAdminEmail(newEmail, s) ? 'super_admin' : emailRole,
+            note: `Tree Member (${getDisplayName(p)})`,
+            updatedAt: new Date().toISOString().slice(0, 10)
+          });
+        }
+      }, manage ? 'Access Control' : 'Tree');
+      const origin = location.origin;
+      const subject = encodeURIComponent('Invitation to ' + getSiteTitle());
+      const body = encodeURIComponent(`You are invited to view our family tree.\n\n${origin}\n`);
+      const link = document.createElement('a');
+      link.href = `mailto:${encodeURIComponent(newEmail)}?subject=${subject}&body=${body}`;
+      link.rel = 'noopener';
+      link.click();
+      showToast('Email saved. A mail draft opened; nothing was sent automatically.');
+    }
+
+    function initQuickEdit() {
+      const modal = document.getElementById('modal-quick-edit');
+      const form = document.getElementById('form-quick-edit');
+      if (!modal || !form || modal.dataset.qeReady) return;
+      modal.dataset.qeReady = '1';
+      modal.addEventListener('click', (e) => {
+        if (e.target.closest && e.target.closest('[data-qe-cancel]')) {
+          e.preventDefault();
+          closeQuickEditModal();
+        }
+      });
+      document.getElementById('btn-qe-close')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        closeQuickEditModal();
+      });
+      document.getElementById('btn-qe-more')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        const id = quickEditPersonId || appState.selectedPersonId;
+        closeQuickEditModal();
+        if (!id) return;
+        openInspector(id, 'edit');
+      });
+      document.getElementById('btn-qe-invite')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        qeInviteToSite();
+      });
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        saveQuickEdit();
+      });
+      form.addEventListener('change', (e) => {
+        const t = e.target;
+        if (!t) return;
+        if (t.name === 'qeLiving') qeSyncLivingUi();
+        if (t.hasAttribute && t.hasAttribute('data-qe-union-status')) {
+          const block = t.closest('[data-qe-union]');
+          if (block) {
+            const st = normalizeUnionStatus(t.value);
+            const head = block.querySelector('[data-qe-union-heading]');
+            if (head) head.textContent = unionSpouseHeading(st);
+            block.querySelector('[data-qe-divorce-fields]')?.classList.toggle('hidden', !unionShowsDivorceFields(st));
+          }
+        }
+        const dateBox = t.closest && t.closest('[data-qe-date]');
+        if (dateBox) {
+          if (t.hasAttribute('data-qe-mode')) qeSyncDateUi(dateBox);
+          if (dateBox.getAttribute('data-qe-date') === 'birth') qeSyncBirthHidden();
+        }
+      });
+    }
+
     function computeAgeYears(birthDateStr, targetDateStr = null) {
       const b = parseFlexibleDateParts(birthDateStr);
       if (!b || !b.year) return null;
@@ -319,13 +1483,18 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       return String(parts.year);
     }
 
+    const TOAST_BANNER_CLASS = 'hidden fixed bottom-14 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-xs font-medium px-4 py-2 rounded-full shadow-lg z-50 max-w-[calc(100vw-24px)]';
     function showToast(msg) {
       const banner = document.getElementById('toast-banner');
       if (!banner) return;
+      banner.replaceChildren();
+      banner.className = TOAST_BANNER_CLASS;
       banner.textContent = msg;
       banner.classList.remove('hidden');
       clearTimeout(banner._timer);
-      banner._timer = setTimeout(() => banner.classList.add('hidden'), 3200);
+      banner._timer = setTimeout(() => {
+        banner.classList.add('hidden');
+      }, 4000);
     }
 
     function setCloudSyncIndicator(status, label) {
@@ -552,10 +1721,484 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       return role === 'super_admin' || role === 'admin' || role === 'edit';
     }
 
+    function readMainPayloadJson(mainData) {
+      if (!mainData) return null;
+      if (typeof mainData.payloadJson === 'string') return mainData.payloadJson;
+      return null;
+    }
+    function prepareMainFields(baseMeta, json, _storedMain) {
+      const reserved = reservedSizeForFields(baseMeta, 'payloadJson', getArchiveDocPath());
+      const fit = jsonFitsInDoc(json, reserved);
+      return { fields: { ...baseMeta, payloadJson: json }, total: fit.total, rulesOk: fit.rulesOk, ok: fit.ok, compressed: false };
+    }
+
+    let addBarHoverId = null;
+    let addBarHideTimer = null;
+    function isMouseLikePointer(e) {
+      const t = e.pointerType;
+      if (t) return t === 'mouse' || t === 'pen';
+      return e.type === 'mouseover' || e.type === 'mouseout';
+    }
+    function clearAddBarOpen() {
+      addBarHoverId = null;
+      document.querySelectorAll('.person-card.add-bar-open').forEach((el) => el.classList.remove('add-bar-open'));
+    }
+    function openAddBarOnCard(card) {
+      if (addBarHideTimer) {
+        clearTimeout(addBarHideTimer);
+        addBarHideTimer = null;
+      }
+      if (!card || !canEditTree() || !card.querySelector('.canvas-add-bar')) return;
+      const id = card.dataset.personCard;
+      if (addBarHoverId === id && card.classList.contains('add-bar-open')) return;
+      document.querySelectorAll('.person-card.add-bar-open').forEach((el) => {
+        if (el !== card) el.classList.remove('add-bar-open');
+      });
+      addBarHoverId = id || null;
+      card.classList.add('add-bar-open');
+    }
+    function scheduleHideAddBar() {
+      if (addBarHideTimer) clearTimeout(addBarHideTimer);
+      addBarHideTimer = setTimeout(() => {
+        addBarHideTimer = null;
+        clearAddBarOpen();
+      }, 180);
+    }
+
     function canAccessAdminPanel() {
       if (!firebaseUser || !firebaseUser.email) return false;
       const role = getEffectiveSessionRole();
       return role === 'super_admin' || role === 'admin';
+    }
+
+
+    function yearFromPersonEvent(person, type) {
+      const ev = (person && person.events || []).find(e => e && e.type === type && e.date);
+      if (!ev) return null;
+      if (typeof parseFlexibleDateParts === 'function') {
+        const parsed = parseFlexibleDateParts(ev.date);
+        if (parsed && parsed.year) return Number(parsed.year);
+      }
+      const m = String(ev.date).match(/\b((?:1[5-9]|20)\d{2})\b/);
+      return m ? Number(m[1]) : null;
+    }
+
+    function normalizePersonName(text) {
+      return String(text || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    function personFullName(person) {
+      if (!person) return '';
+      return `${person.given || ''} ${person.surname || ''}`.trim() || 'Unnamed individual';
+    }
+
+    function personNameKey(person) {
+      return normalizePersonName(`${person.given || ''} ${person.surname || ''} ${person.altName || ''}`);
+    }
+
+    function parentIdsOf(personId, families) {
+      const ids = [];
+      Object.values(families || {}).forEach(fam => {
+        const kids = fam && fam.children || [];
+        const hit = kids.some(c => (c && (c.personId || c)) === personId);
+        if (!hit) return;
+        if (fam.partner1Id) ids.push(fam.partner1Id);
+        if (fam.partner2Id) ids.push(fam.partner2Id);
+      });
+      return [...new Set(ids)].sort();
+    }
+
+    function arePartners(personA, personB, families) {
+      return Object.values(families || {}).some(fam => {
+        const ids = [fam.partner1Id, fam.partner2Id];
+        return ids.includes(personA) && ids.includes(personB);
+      });
+    }
+
+    function scoreDuplicatePair(a, b, families) {
+      if (!a || !b || a.id === b.id) return 0;
+      const na = personNameKey(a);
+      const nb = personNameKey(b);
+      if (!na || !nb) return 0;
+      let score = 0;
+      if (na === nb) score += 40;
+      else if (na.includes(nb) || nb.includes(na)) score += 24;
+      else {
+        const ta = new Set(na.split(' ').filter(t => t.length > 1));
+        const tb = new Set(nb.split(' ').filter(t => t.length > 1));
+        const inter = [...ta].filter(t => tb.has(t));
+        if (!inter.length) return 0;
+        score += inter.length >= 2 ? 32 : 10;
+      }
+      const byA = yearFromPersonEvent(a, 'BIRT');
+      const byB = yearFromPersonEvent(b, 'BIRT');
+      if (byA && byB) {
+        const d = Math.abs(byA - byB);
+        if (d === 0) score += 25;
+        else if (d <= 1) score += 15;
+        else if (d <= 3) score += 6;
+        else if (d > 15) score -= 20;
+      }
+      const dyA = yearFromPersonEvent(a, 'DEAT');
+      const dyB = yearFromPersonEvent(b, 'DEAT');
+      if (dyA && dyB) {
+        const d = Math.abs(dyA - dyB);
+        if (d === 0) score += 12;
+        else if (d > 15) score -= 10;
+      }
+      const pa = parentIdsOf(a.id, families);
+      const pb = parentIdsOf(b.id, families);
+      if (pa.length && pb.length) {
+        const shared = pa.filter(id => pb.includes(id));
+        if (shared.length && pa.join(',') === pb.join(',')) score += 25;
+        else if (shared.length) score += 12;
+      }
+      if (a.sex && b.sex && a.sex !== 'U' && b.sex !== 'U' && a.sex !== b.sex) score -= 8;
+      return score;
+    }
+
+    const DUPLICATE_SCORE_MIN = 55;
+
+    function findDuplicatePairs(stateObj, minScore) {
+      const floor = typeof minScore === 'number' ? minScore : DUPLICATE_SCORE_MIN;
+      const persons = Object.values((stateObj || appState).persons || {});
+      const families = (stateObj || appState).families || {};
+      const pairs = [];
+      for (let i = 0; i < persons.length; i++) {
+        for (let j = i + 1; j < persons.length; j++) {
+          const score = scoreDuplicatePair(persons[i], persons[j], families);
+          if (score >= floor) {
+            pairs.push({
+              a: persons[i].id,
+              b: persons[j].id,
+              score,
+              partners: arePartners(persons[i].id, persons[j].id, families)
+            });
+          }
+        }
+      }
+      pairs.sort((x, y) => y.score - x.score || String(x.a).localeCompare(String(y.a)));
+      return pairs;
+    }
+
+    function eventDedupeKey(ev) {
+      return `${ev && ev.type || ''}|${ev && ev.date || ''}|${ev && ev.place || ''}`;
+    }
+
+    function mergePeopleIntoState(stateObj, primaryId, secondaryId, opts) {
+      const state = stateObj || appState;
+      const primary = state.persons && state.persons[primaryId];
+      const secondary = state.persons && state.persons[secondaryId];
+      if (!primary || !secondary) return { ok: false, error: 'Both people must still exist.' };
+      if (primaryId === secondaryId) return { ok: false, error: 'Cannot merge a person with themselves.' };
+      if (arePartners(primaryId, secondaryId, state.families)) {
+        return { ok: false, error: 'These two people are partners in a union. Unlink that relationship before merging.' };
+      }
+      const choices = (opts && opts.fields) || {};
+      const isEmpty = (v) => v == null || v === '' || (Array.isArray(v) && !v.length);
+      const pick = (field, a, b) => {
+        if (choices[field] === 'secondary') return b;
+        if (choices[field] === 'primary') return a;
+        return isEmpty(a) ? b : a;
+      };
+      const scalarFields = ['given', 'surname', 'altName', 'prefix', 'suffix', 'sex', 'livingStatus', 'bio', 'photoUrl', 'village'];
+      scalarFields.forEach(field => { primary[field] = pick(field, primary[field], secondary[field]); });
+      const emails = [...new Set([...(primary.emails || []), ...(secondary.emails || [])]
+        .map(e => String(e || '').trim().toLowerCase()).filter(Boolean))];
+      primary.emails = emails;
+      const events = [...(primary.events || [])];
+      const seenEv = new Set(events.map(eventDedupeKey));
+      (secondary.events || []).forEach(ev => {
+        const key = eventDedupeKey(ev);
+        if (seenEv.has(key)) return;
+        seenEv.add(key);
+        events.push({ ...ev, id: ev.id || ('ev_mrg_' + Math.random().toString(36).slice(2, 8)) });
+      });
+      primary.events = events;
+      const media = [...(primary.media || [])];
+      const mediaKeys = new Set(media.map(m => m && (m.id || m.url || JSON.stringify(m))));
+      (secondary.media || []).forEach(item => {
+        const key = item && (item.id || item.url || JSON.stringify(item));
+        if (mediaKeys.has(key)) return;
+        mediaKeys.add(key);
+        media.push(item);
+      });
+      primary.media = media;
+      const assertions = [...(primary.assertions || []), ...(secondary.assertions || [])];
+      primary.assertions = assertions;
+      if (secondary.customTags && typeof secondary.customTags === 'object') {
+        primary.customTags = { ...(secondary.customTags || {}), ...(primary.customTags || {}) };
+      }
+      Object.values(state.families || {}).forEach(fam => {
+        if (!fam) return;
+        if (fam.partner1Id === secondaryId) fam.partner1Id = primaryId;
+        if (fam.partner2Id === secondaryId) fam.partner2Id = primaryId;
+        if (!Array.isArray(fam.children)) return;
+        const hasPrimary = fam.children.some(c => (c && (c.personId || c)) === primaryId);
+        fam.children = fam.children.map(c => {
+          const id = c && (c.personId || c);
+          if (id !== secondaryId) return c;
+          if (hasPrimary) return null;
+          if (c && typeof c === 'object') return { ...c, personId: primaryId };
+          return { personId: primaryId, linkage: 'biological' };
+        }).filter(Boolean);
+      });
+      ((state.accessControl && state.accessControl.permissions) || []).forEach(pm => {
+        if (pm && pm.personId === secondaryId) pm.personId = primaryId;
+      });
+      if (state.centralPersonId === secondaryId) state.centralPersonId = primaryId;
+      if (state.selectedPersonId === secondaryId) state.selectedPersonId = primaryId;
+      delete state.persons[secondaryId];
+      return { ok: true, primaryId, secondaryId };
+    }
+
+
+    let mergeCompareState = null;
+
+    function canRunMergeTool() {
+      if (typeof canEditTree === 'function') return canEditTree();
+      if (typeof isAdminAuthorized === 'function') return isAdminAuthorized();
+      return false;
+    }
+
+    function openMergeDuplicatesDialog() {
+      if (!canRunMergeTool()) {
+        showToast('Sign in with an Editor or Admin account to merge people.');
+        return;
+      }
+      const modal = document.getElementById('merge-duplicates-modal');
+      if (!modal) return;
+      modal.classList.remove('hidden');
+      mergeCompareState = null;
+      renderMergeDuplicatesModal();
+      const first = modal.querySelector('button, [href], input, select, textarea');
+      if (first) first.focus();
+    }
+
+    function closeMergeDuplicatesDialog() {
+      const modal = document.getElementById('merge-duplicates-modal');
+      if (modal) modal.classList.add('hidden');
+      mergeCompareState = null;
+    }
+
+    function personCompareFacts(person, stateObj) {
+      const families = (stateObj || appState).families || {};
+      const birth = (person.events || []).find(e => e.type === 'BIRT');
+      const death = (person.events || []).find(e => e.type === 'DEAT');
+      const parentIds = parentIdsOf(person.id, families);
+      const parentNames = parentIds.map(id => personFullName((stateObj || appState).persons[id])).filter(Boolean);
+      let partnerCount = 0;
+      let childCount = 0;
+      Object.values(families).forEach(fam => {
+        if (fam.partner1Id === person.id || fam.partner2Id === person.id) {
+          partnerCount += 1;
+          childCount += (fam.children || []).length;
+        } else if ((fam.children || []).some(c => (c && (c.personId || c)) === person.id)) {
+          /* listed as a child only */
+        }
+      });
+      return {
+        name: personFullName(person),
+        given: person.given || '',
+        surname: person.surname || '',
+        altName: person.altName || '',
+        sex: person.sex || '',
+        livingStatus: person.livingStatus || '',
+        village: person.village || '',
+        bio: person.bio || '',
+        photoUrl: person.photoUrl || '',
+        emails: (person.emails || []).join(', '),
+        birth: birth ? `${birth.date || ''} ${birth.place || ''}`.trim() : '',
+        death: death ? `${death.date || ''} ${death.place || ''}`.trim() : '',
+        parents: parentNames.join(' · ') || '—',
+        unions: String(partnerCount),
+        children: String(childCount),
+        eventCount: String((person.events || []).length)
+      };
+    }
+
+    const MERGE_COMPARE_FIELDS = [
+      ['given', 'Given name'],
+      ['surname', 'Surname'],
+      ['altName', 'Also known as'],
+      ['sex', 'Sex'],
+      ['livingStatus', 'Living status'],
+      ['birth', 'Birth'],
+      ['death', 'Death'],
+      ['village', 'Place / village'],
+      ['emails', 'Emails'],
+      ['bio', 'Notes'],
+      ['photoUrl', 'Photo'],
+      ['parents', 'Parents'],
+      ['unions', 'Unions'],
+      ['children', 'Children in unions'],
+      ['eventCount', 'Recorded events']
+    ];
+
+    function renderMergeDuplicatesModal() {
+      const listEl = document.getElementById('merge-dup-list');
+      const compareEl = document.getElementById('merge-dup-compare');
+      const statusEl = document.getElementById('merge-dup-status');
+      if (!listEl || !compareEl) return;
+      if (mergeCompareState) {
+        listEl.classList.add('hidden');
+        compareEl.classList.remove('hidden');
+        renderMergeCompare(compareEl);
+        if (statusEl) statusEl.textContent = 'Compare the two records, choose who to keep, then merge.';
+        return;
+      }
+      listEl.classList.remove('hidden');
+      compareEl.classList.add('hidden');
+      const pairs = findDuplicatePairs(appState);
+      if (statusEl) {
+        statusEl.textContent = pairs.length
+          ? `Found ${pairs.length} likely duplicate pair${pairs.length === 1 ? '' : 's'}.`
+          : 'No likely duplicates found (same or very similar name, plus a matching date or shared parents).';
+      }
+      if (!pairs.length) {
+        listEl.innerHTML = '<p class="text-sm text-slate-600 px-1 py-6 text-center">Nothing to merge right now. You can still open this later if a person was entered twice.</p>';
+        return;
+      }
+      listEl.innerHTML = pairs.slice(0, 80).map(pair => {
+        const a = appState.persons[pair.a];
+        const b = appState.persons[pair.b];
+        const partnerNote = pair.partners
+          ? '<span class="text-[10px] font-semibold uppercase tracking-wide text-amber-800 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">Partners — unlink first</span>'
+          : '';
+        return `<button type="button" class="merge-dup-row w-full text-left rounded-xl border border-parchment-300 bg-parchment-50 hover:bg-white hover:border-archival-indigo px-3 py-2.5 flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-3" data-merge-a="${escapeHtml(pair.a)}" data-merge-b="${escapeHtml(pair.b)}">
+          <span class="flex-1 min-w-0">
+            <span class="block text-sm font-semibold text-slate-900 truncate">${escapeHtml(personFullName(a))}</span>
+            <span class="block text-xs text-slate-600 truncate">${escapeHtml(personFullName(b))}</span>
+          </span>
+          <span class="flex items-center gap-2 shrink-0">
+            ${partnerNote}
+            <span class="text-[10px] font-mono text-slate-500">score ${pair.score}</span>
+          </span>
+        </button>`;
+      }).join('');
+    }
+
+    function renderMergeCompare(compareEl) {
+      const { a, b, keep } = mergeCompareState;
+      const personA = appState.persons[a];
+      const personB = appState.persons[b];
+      if (!personA || !personB) {
+        compareEl.innerHTML = '<p class="text-sm text-rose-700">One of these people is no longer in the tree.</p>';
+        return;
+      }
+      const factsA = personCompareFacts(personA, appState);
+      const factsB = personCompareFacts(personB, appState);
+      const partnerBlock = arePartners(a, b, appState.families)
+        ? '<p class="text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">These two people are partners in a union. Unlink that relationship before merging.</p>'
+        : '';
+      const fieldRows = MERGE_COMPARE_FIELDS.map(([key, label]) => {
+        const left = key === 'photoUrl' ? (factsA.photoUrl ? 'Has a photo' : '—') : (factsA[key] || '—');
+        const right = key === 'photoUrl' ? (factsB.photoUrl ? 'Has a photo' : '—') : (factsB[key] || '—');
+        const differ = String(factsA[key] || '') !== String(factsB[key] || '');
+        return `<tr class="${differ ? 'bg-amber-50/60' : ''}">
+          <th class="text-left text-[11px] font-semibold text-slate-600 px-2 py-1.5 align-top whitespace-nowrap">${escapeHtml(label)}</th>
+          <td class="text-xs text-slate-800 px-2 py-1.5 align-top break-words">${escapeHtml(left)}</td>
+          <td class="text-xs text-slate-800 px-2 py-1.5 align-top break-words">${escapeHtml(right)}</td>
+        </tr>`;
+      }).join('');
+      compareEl.innerHTML = `
+        <div class="flex items-center justify-between gap-2">
+          <button type="button" id="merge-dup-back" class="text-xs font-semibold text-archival-indigo hover:underline">← All matches</button>
+        </div>
+        ${partnerBlock}
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label class="border rounded-xl p-3 cursor-pointer ${keep === a ? 'border-archival-indigo bg-indigo-50/40' : 'border-parchment-300'}">
+            <input type="radio" name="merge-keep" value="${escapeHtml(a)}" ${keep === a ? 'checked' : ''} class="mr-2 align-middle" />
+            <span class="text-sm font-semibold text-slate-900">Keep this person</span>
+            <div class="mt-1 text-sm text-slate-800">${escapeHtml(factsA.name)}</div>
+            <div class="text-[10px] font-mono text-slate-500">${escapeHtml(a)}</div>
+          </label>
+          <label class="border rounded-xl p-3 cursor-pointer ${keep === b ? 'border-archival-indigo bg-indigo-50/40' : 'border-parchment-300'}">
+            <input type="radio" name="merge-keep" value="${escapeHtml(b)}" ${keep === b ? 'checked' : ''} class="mr-2 align-middle" />
+            <span class="text-sm font-semibold text-slate-900">Keep this person</span>
+            <div class="mt-1 text-sm text-slate-800">${escapeHtml(factsB.name)}</div>
+            <div class="text-[10px] font-mono text-slate-500">${escapeHtml(b)}</div>
+          </label>
+        </div>
+        <div class="overflow-auto max-h-[42vh] border border-parchment-200 rounded-xl">
+          <table class="w-full text-left">
+            <thead class="bg-parchment-50 text-[10px] uppercase tracking-wide text-slate-500">
+              <tr><th class="px-2 py-1.5">Field</th><th class="px-2 py-1.5">Left</th><th class="px-2 py-1.5">Right</th></tr>
+            </thead>
+            <tbody>${fieldRows}</tbody>
+          </table>
+        </div>
+        <p class="text-[11px] text-slate-500">The kept person receives the other record’s relationships, emails, events, and notes. Empty fields on the kept person are filled from the other. This is written to the change log and can be reverted.</p>
+        <div class="flex justify-end gap-2">
+          <button type="button" class="merge-dup-close px-3 py-2 text-xs font-semibold rounded-xl border border-parchment-300 text-slate-700">Cancel</button>
+          <button type="button" id="merge-dup-apply" class="px-3 py-2 text-xs font-semibold rounded-xl bg-archival-indigo text-white disabled:opacity-40">Merge into the kept person</button>
+        </div>`;
+    }
+
+    function applySelectedMerge() {
+      if (!mergeCompareState) return;
+      const primaryId = mergeCompareState.keep;
+      const secondaryId = primaryId === mergeCompareState.a ? mergeCompareState.b : mergeCompareState.a;
+      if (arePartners(primaryId, secondaryId, appState.families)) {
+        showToast('These two people are partners in a union. Unlink that relationship before merging.');
+        return;
+      }
+      const summary = `Merged duplicate person ${secondaryId} into ${primaryId}`;
+      const run = (state) => {
+        const result = mergePeopleIntoState(state, primaryId, secondaryId);
+        if (!result.ok) throw new Error(result.error || 'Merge failed.');
+      };
+      const finish = (ok) => {
+        if (ok === false) return;
+        mergeCompareState = null;
+        renderMergeDuplicatesModal();
+      };
+      if (typeof commitMutation === 'function') {
+        finish(commitMutation(summary, run, 'Tree Data'));
+      } else if (typeof commitTreeDataMutation === 'function') {
+        Promise.resolve(commitTreeDataMutation(summary, run)).then(finish);
+      } else {
+        showToast('Merge is unavailable on this page.');
+      }
+    }
+
+    function bindMergeDuplicatesUi() {
+      const modal = document.getElementById('merge-duplicates-modal');
+      if (!modal || modal.dataset.bound === '1') return;
+      modal.dataset.bound = '1';
+      modal.addEventListener('click', (event) => {
+        if (event.target === modal || event.target.id === 'merge-dup-cancel' || event.target.closest('.merge-dup-close') || event.target.id === 'merge-dup-backdrop') {
+          closeMergeDuplicatesDialog();
+          return;
+        }
+        const row = event.target.closest('.merge-dup-row');
+        if (row) {
+          mergeCompareState = { a: row.dataset.mergeA, b: row.dataset.mergeB, keep: row.dataset.mergeA };
+          renderMergeDuplicatesModal();
+          return;
+        }
+        if (event.target.id === 'merge-dup-back') {
+          mergeCompareState = null;
+          renderMergeDuplicatesModal();
+          return;
+        }
+        if (event.target.id === 'merge-dup-apply') applySelectedMerge();
+      });
+      modal.addEventListener('change', (event) => {
+        if (event.target && event.target.name === 'merge-keep' && mergeCompareState) {
+          mergeCompareState.keep = event.target.value;
+          renderMergeDuplicatesModal();
+        }
+      });
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && modal && !modal.classList.contains('hidden')) closeMergeDuplicatesDialog();
+      });
     }
 
     function resolveCentralPersonIdForUser() {
@@ -612,7 +2255,102 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     function stopDocListeners() {
       if (unsubscribeArchive) { unsubscribeArchive(); unsubscribeArchive = null; }
       if (unsubscribeLog) { unsubscribeLog(); unsubscribeLog = null; }
+      stopEditLocks();
     }
+
+    /* =====================================================================
+     * PER-PERSON EDIT LOCKS (prototype, src/edit-locks.js)
+     * Off until the lock rules are deployed (EDIT_LOCKS_ENABLED). When on,
+     * opening an edit form for a person takes a lock under the configured archive;
+     * others see "X is editing" live and their edit form for that person is
+     * paused. If locks cannot be used (rules missing, offline), editing goes on
+     * and the revision guard still refuses a conflicting save.
+     * ===================================================================== */
+    const EDIT_LOCKS_ENABLED = false;
+    let editLockManager = null;
+    const heldLockIds = new Set();
+    function startEditLocks() {
+      if (!EDIT_LOCKS_ENABLED || editLockManager || !db || !firebaseUser) return;
+      editLockManager = createEditLockManager({
+        db,
+        fsApi: { doc, collection, onSnapshot, runTransaction, deleteDoc, serverTimestamp, Timestamp },
+        user: { uid: firebaseUser.uid, email: firebaseUser.email, name: (sessionAuth && sessionAuth.displayName) || firebaseUser.email },
+        onChange: () => applyEditLockUi(),
+        onError: (err) => console.warn('Edit locks unavailable:', err && err.code)
+      });
+      editLockManager.watch();
+    }
+    function stopEditLocks() {
+      if (editLockManager) { try { editLockManager.stop(); } catch (e) {} }
+      editLockManager = null;
+      heldLockIds.clear();
+    }
+    window.addEventListener('pagehide', () => { if (editLockManager) editLockManager.releaseAll(); heldLockIds.clear(); });
+    function personEditFormOpen() {
+      return Boolean(quickEditIsOpen() || (uiState.inspectorOpen && canEditTree()
+        && (uiState.inspectorTab === 'edit' || uiState.inspectorTab === 'add' || uiState.editingFactItem || uiState.showFactAddForm)));
+    }
+    function formatLockClock(ts) {
+      const ms = ts && typeof ts.toMillis === 'function' ? ts.toMillis() : Number(ts) || 0;
+      if (!ms) return '';
+      return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    function applyEditLockUi() {
+      const roots = [];
+      const insp = document.getElementById('inspector-body');
+      if (insp) roots.push(insp);
+      const qeSlot = document.getElementById('qe-lock-slot');
+      const qeModal = document.getElementById('modal-quick-edit');
+      if (qeSlot && qeModal && !qeModal.classList.contains('hidden')) roots.push(qeSlot);
+      if (!roots.length) return;
+      for (const body of roots) {
+        body.querySelectorAll('[data-edit-lock-banner]').forEach(el => el.remove());
+        const scope = body.id === 'qe-lock-slot' ? qeModal : body;
+        scope.querySelectorAll('[data-lock-disabled]').forEach(el => { el.disabled = false; el.removeAttribute('data-lock-disabled'); });
+      }
+      const pid = appState.selectedPersonId;
+      if (!editLockManager) return;
+      const editing = Boolean(pid) && personEditFormOpen();
+      for (const id of [...heldLockIds]) {
+        if (id !== pid || !editing) { heldLockIds.delete(id); editLockManager.release(id); }
+      }
+      if (!pid) return;
+      const lock = editLockManager.lockFor(pid);
+      const other = lock && lock.live && !lock.mine ? lock : null;
+      if (editing && !other && !heldLockIds.has(pid)) {
+        heldLockIds.add(pid);
+        editLockManager.acquire(pid).then((r) => { if (!r.ok) { heldLockIds.delete(pid); applyEditLockUi(); } }).catch(() => { heldLockIds.delete(pid); });
+      }
+      if (!other) return;
+      const who = escapeHtml(other.holderName || other.holderEmail || 'Someone');
+      const until = formatLockClock(other.expiresAt);
+      for (const body of roots) {
+        const banner = document.createElement('div');
+        banner.setAttribute('data-edit-lock-banner', pid);
+        banner.setAttribute('role', 'status');
+        banner.className = 'mx-4 mt-3 mb-1 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900';
+        banner.innerHTML = `<div class="font-semibold">🔒 ${who} is editing this person right now.</div>`
+          + `<div class="mt-0.5">${editing ? 'Your edit form is paused so the two of you do not overwrite each other. It unlocks as soon as they finish' : 'You can view; editing unlocks when they finish'}${until ? ` (at the latest about ${escapeHtml(until)} if their page closes)` : ''}.</div>`
+          + (canAccessAdminPanel() ? `<button type="button" data-force-release-lock="${escapeAttr(pid)}" class="mt-1.5 text-[11px] font-semibold text-rose-700 hover:underline">Force release (admin)</button>` : '');
+        body.prepend(banner);
+        if (editing) {
+          const scope = body.id === 'qe-lock-slot' ? qeModal : body;
+          scope.querySelectorAll('input, select, textarea, button[type="submit"], #btn-qe-ok, #btn-qe-invite').forEach(el => {
+            if (el.closest('[data-edit-lock-banner]') || el.disabled) return;
+            el.disabled = true;
+            el.setAttribute('data-lock-disabled', '1');
+          });
+        }
+      }
+    }
+    document.addEventListener('click', (e) => {
+      const btn = e.target && e.target.closest && e.target.closest('[data-force-release-lock]');
+      if (!btn || !editLockManager || !canAccessAdminPanel()) return;
+      const id = btn.getAttribute('data-force-release-lock');
+      editLockManager.forceRelease(id)
+        .then(() => showToast('Edit lock released. The other person\'s unsaved changes will be refused if they conflict.'))
+        .catch((err) => showToast('Could not release the lock: ' + ((err && err.code) || 'error')));
+    });
 
 
 
@@ -620,8 +2358,9 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     function assembleStateFromDocs(mainData, logData) {
       if (!mainData && !logData) return null;
       let parsed = null;
-      if (mainData && mainData.payloadJson) {
-        parsed = JSON.parse(mainData.payloadJson);
+      const mainJson = mainData ? readMainPayloadJson(mainData) : null; // plain or gzip; throws on an unknown encoding
+      if (mainJson) {
+        parsed = JSON.parse(mainJson);
       } else if (mainData) {
         parsed = createBlankDataset();
       } else {
@@ -716,13 +2455,13 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
      * - Saves run one at a time and coalesce (only the newest state is sent).
      * - A transaction checks that nobody else saved since our copy was loaded,
      *   so one session can no longer silently overwrite another's edits.
-     * - The family tree is written to the configured tree document. The change log
+     * - The family tree is written to the configured archive document. The change log
      *   (history and revert snapshots) is written to the configured log document
      *   in the same transaction or batch, so each document has its own 1 MB budget.
      * - If the log document would overflow, the oldest snapshots (then oldest
      *   entries) are trimmed; the tree save is not blocked by the log size.
      * ===================================================================== */
-        let archiveBaseUpdatedAt = null;  // updatedAt of the remote main doc appState derives from
+    let archiveBaseUpdatedAt = null;  // updatedAt of the remote main doc appState derives from
     let archiveBaseRevision = null;   // revision of that same remote main doc
     let logBaseUpdatedAt = null;      // updatedAt of the remote log doc
     let pendingSaveState = null;
@@ -823,7 +2562,10 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
 
     function estimateAllStorage(stateObj, metaExtras) {
       const split = splitStateForWrite(stateObj);
-      const mainFields = buildMainDocFields(split.tree, null, metaExtras);
+      const mainMeta = buildMainDocFields(split.tree, '', metaExtras);
+      delete mainMeta.payloadJson;
+      // Same shape a save would write (compressed when the stored document is).
+      const mainFields = prepareMainFields(mainMeta, JSON.stringify(split.tree), latestMainData).fields;
       const logFields = buildLogDocFields(split.log, metaExtras);
       return {
         main: describeMainStorage(mainFields, split.tree),
@@ -841,12 +2583,12 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     function prepareMainWrite(treeState, metaExtras = {}) {
       const baseMeta = buildMainDocFields(treeState, '', metaExtras);
       delete baseMeta.payloadJson;
-      const reserved = reservedSizeForFields(baseMeta, 'payloadJson', getArchiveDocPath());
       const json = JSON.stringify(treeState);
-      const fit = jsonFitsInDoc(json, reserved);
-      const fields = { ...baseMeta, payloadJson: json };
+      // Plain payloadJson, or gzip when switched on / the stored document is already compressed.
+      const fit = prepareMainFields(baseMeta, json, latestMainData);
+      const fields = fit.fields;
       const estimate = describeMainStorage(fields, treeState);
-      return { ok: fit.ok, json, fields, estimate, bytes: fit.total, reason: fit.ok ? null : (fit.rulesOk ? 'document' : 'payloadJson') };
+      return { ok: fit.ok, json, fields, estimate, bytes: fit.total, compressed: fit.compressed, reason: fit.ok ? null : (fit.rulesOk ? 'document' : (fit.compressed ? 'payloadGzip' : 'payloadJson')) };
     }
 
     // May trim oldest snapshots, then drop oldest entries, in place on logState.changeEvents.
@@ -995,15 +2737,15 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       const stateObj = pendingSaveState;
       pendingSaveState = null;
       if (!stateObj) return { ok: true, skipped: true };
+      if (stateObj !== appState) {
+        hooks.onStale();
+        return { ok: false, stale: true, error: { code: 'aborted', message: 'Someone else saved first. Their latest version is shown — please repeat your last change.' } };
+      }
       if (typeof testWriteImpl !== 'function' && typeof navigator !== 'undefined' && navigator.onLine === false) {
         const err = { code: 'unavailable', offline: true, message: OFFLINE_SAVE_MESSAGE, userMessage: OFFLINE_SAVE_MESSAGE };
         if (typeof hooks.onOffline === 'function') hooks.onOffline(err);
         else hooks.onError(err);
         return { ok: false, offline: true, error: err };
-      }
-      if (stateObj !== appState) {
-        hooks.onStale();
-        return { ok: false, stale: true, error: { code: 'aborted', message: 'Someone else saved first. Their latest version is shown — please repeat your last change.' } };
       }
       if (!firebaseUser || !firebaseUser.email) {
         return { ok: false, error: { code: 'unauthenticated', message: 'You are not signed in.' } };
@@ -1154,8 +2896,11 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         onError: (err) => {
           console.error('Firestore save error:', err);
           const formatted = formatFirestoreError(err);
-          if (formatted.offline) setCloudSyncIndicator('offline', 'Offline — save when you reconnect');
-          else setCloudSyncIndicator('offline', 'Firestore Write Blocked');
+          if (formatted.offline) {
+            setCloudSyncIndicator('offline', 'Offline — save when you reconnect');
+          } else {
+            setCloudSyncIndicator('offline', 'Firestore Write Blocked');
+          }
           showToast(formatted.text);
         }
       };
@@ -1174,6 +2919,8 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         firebaseApp = initializeApp(config);
         auth = getAuth(firebaseApp);
         db = await openFirestoreDatabase(firebaseApp);
+        try { firebaseStorage = getStorage(firebaseApp); } catch (storageErr) { firebaseStorage = null; }
+        startAppCheckIfConfigured(firebaseApp);
 
         try {
           await setPersistence(auth, browserLocalPersistence);
@@ -1233,10 +2980,10 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
             if (!initialSnap.exists()) {
               const expected = getConfiguredSuperAdminEmail();
               if (expected && signedEmail !== expected) {
-                firestoreAccessDenied = true;
-                appState = normalizeAppState(createBlankDataset());
-                setCloudSyncIndicator('offline', 'Sign In Required');
                 showToast('This archive has not been created yet. Sign in as the Super Admin to set it up.');
+                appState = normalizeAppState(createBlankDataset());
+                purgeLocalCachedRecords();
+                setCloudSyncIndicator('offline', 'Setup required');
                 renderAll();
                 return;
               }
@@ -1282,6 +3029,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
               setCloudSyncIndicator('offline', 'Sync Interrupted');
             }
           };
+          startEditLocks();
           unsubscribeArchive = onSnapshot(
             docRef,
             (docSnap) => {
@@ -1466,6 +3214,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         showToast('View Access Only: Sign in with an Editor Google account to edit.');
         return false;
       }
+      const previousPortraitUrls = collectOurPortraitUrlsFromState(appState);
       const beforeSnap = captureDomainSnapshot(appState);
       try {
         mutatorFn(appState);
@@ -1484,7 +3233,8 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
 
       const afterSnap = captureDomainSnapshot(appState);
       logChangeEvent(summary, category, beforeSnap, afterSnap);
-      persistState(appState);
+      const write = persistState(appState);
+      scheduleOrphanPortraitCleanup(previousPortraitUrls, write);
       renderAll();
       showToast(summary);
       return true;
@@ -1694,11 +3444,12 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     /* =====================================================================
      * 7. SIBLING-PRESERVING, MULTI-SPOUSE LAYERED GENERATIONAL LAYOUT ENGINE
      * ===================================================================== */
-    const CARD_W = 140;
-    const CARD_H = 144;
-    const PARTNER_GAP = 44;
-    const MIN_UNIT_GAP = 44;
-    const LAYER_HEIGHT = 228;
+    const CARD_W = 188;
+    const CARD_H = 104;
+    const PARTNER_GAP = 52;
+    const MIN_UNIT_GAP = 52;
+    // 104px card + 96px gutter: room for the hover pill (~27px) and staggered union buses.
+    const LAYER_HEIGHT = 200;
     const TOP_OFFSET = 42;
     const LEFT_SWIMLANE_MARGIN = 172;
 
@@ -1867,12 +3618,14 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         depth < 5 ? (resolveCentralPersonIdForUser() || '') : '',
         isFocusViewActive() ? `focus:${getFocusPersonId() || ''}` : 'full',
         (uiState.highlightedKinship?.pathIds || []).join(','),
-        Object.keys(appState.persons).join(','),
-        JSON.stringify(appState.families)
+        appState.tree && appState.tree.revision || 0,
+        Object.keys(appState.persons || {}).length,
+        Object.keys(appState.families || {}).length,
+        layoutCache.epoch || 0
       ].join('|');
       if (layoutCache.key === key && layoutCache.value) return layoutCache.value;
       const value = computeTreeLayoutUncached();
-      layoutCache = { key, value };
+      layoutCache = { key, value, epoch: layoutCache.epoch || 0 };
       return value;
     }
 
@@ -2351,7 +4104,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
 
         const gutterTop = TOP_OFFSET + g * LAYER_HEIGHT + CARD_H;
         layerFams.forEach((f, idx) => {
-          familyGutterMap[f.id] = gutterTop + 20 + (idx % 5) * 11;
+          familyGutterMap[f.id] = gutterTop + 36 + (idx % 5) * 11;
         });
       }
 
@@ -2395,6 +4148,9 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       renderVisualCanvas(layout);
       renderAccessibleOutline(layout.generations);
       renderInspector(layout.generations);
+      ensureLanguageSwitcher();
+      applyI18n(document);
+      applyEditLockUi();
     }
 
     function updateHeaderControls() {
@@ -2568,6 +4324,81 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     }
 
 
+    let lastRenderedLayout = null;
+    let recullFrame = 0;
+    let forceFullCanvasDraw = false;
+    const DRAW_OVERSCAN_PX = 420;
+
+    function invalidateTreeLayoutCache() {
+      layoutCache = { key: null, value: null, epoch: (layoutCache && layoutCache.epoch || 0) + 1 };
+      lastRenderedLayout = null;
+    }
+
+    function getTreeViewportRect() {
+      const viewport = document.getElementById('canvas-viewport');
+      const width = (viewport && viewport.clientWidth) || 960;
+      const height = (viewport && viewport.clientHeight) || 640;
+      const zoom = uiState.zoom || 1;
+      const overscan = DRAW_OVERSCAN_PX / zoom;
+      const x0 = ((-uiState.panX) / zoom) - overscan;
+      const y0 = ((-uiState.panY) / zoom) - overscan;
+      const x1 = ((-uiState.panX + width) / zoom) + overscan;
+      const y1 = ((-uiState.panY + height) / zoom) + overscan;
+      return { x0, y0, x1, y1, width, height, zoom };
+    }
+
+    function shouldCullCanvas(layout) {
+      if (forceFullCanvasDraw) return false;
+      if (document.body.classList.contains('printing')) return false;
+      if (document.body.getAttribute('data-print-scope')) return false;
+      const count = layout && layout.nodes ? Object.keys(layout.nodes).length : 0;
+      return count >= 40;
+    }
+
+    function overlapsView(x, y, w, h, view) {
+      if (!view) return true;
+      return (x + w) >= view.x0 && x <= view.x1 && (y + h) >= view.y0 && y <= view.y1;
+    }
+
+    function segmentOverlapsView(x1, y1, x2, y2, view) {
+      if (!view) return true;
+      const minX = Math.min(x1, x2);
+      const maxX = Math.max(x1, x2);
+      const minY = Math.min(y1, y2);
+      const maxY = Math.max(y1, y2);
+      return overlapsView(minX, minY, Math.max(1, maxX - minX), Math.max(1, maxY - minY), view);
+    }
+
+    function scheduleVisibleCanvasRefresh() {
+      if (recullFrame) return;
+      recullFrame = requestAnimationFrame(() => {
+        recullFrame = 0;
+        const layout = lastRenderedLayout || computeTreeLayout();
+        renderVisualCanvas(layout, { fromRecull: true });
+      });
+    }
+
+    function measureCanvasRender(opts) {
+      const options = opts || {};
+      const prevForce = forceFullCanvasDraw;
+      if (options.forceFull) forceFullCanvasDraw = true;
+      const start = performance.now();
+      const layout = computeTreeLayout();
+      renderVisualCanvas(layout, { skipRecull: true });
+      const ms = performance.now() - start;
+      const cards = document.querySelectorAll('[data-person-card]').length;
+      const layoutCount = Object.keys(layout.nodes || {}).length;
+      forceFullCanvasDraw = prevForce;
+      return {
+        ms: Math.round(ms * 10) / 10,
+        cards,
+        layoutCount,
+        culled: cards < layoutCount,
+        virtualized: shouldCullCanvas(layout) && !options.forceFull
+      };
+    }
+
+
     const canvasDom = {
       nodes: new Map(),
       unions: new Map(),
@@ -2628,7 +4459,10 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       }
     }
 
-    function renderVisualCanvas(layout) {
+    function renderVisualCanvas(layout, renderOpts) {
+      renderOpts = renderOpts || {};
+      lastRenderedLayout = layout;
+      const view = shouldCullCanvas(layout) ? getTreeViewportRect() : null;
       const personIds = Object.keys(layout.nodes);
       const emptyOverlay = document.getElementById('empty-tree-overlay');
       if (Object.keys(appState.persons).length === 0) {
@@ -2649,19 +4483,19 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       svgEl.setAttribute('height', totalHeight);
       svgEl.setAttribute('viewBox', `0 0 ${totalWidth} ${totalHeight}`);
 
-      let swimlanesHtml = '';
-      let jumpPillsHtml = '';
-      for (let g = 0; g <= layout.maxGen; g++) {
-        const topY = g * LAYER_HEIGHT;
-        const roman = toRomanNumeral(g + 1);
-        const bgClass = g % 2 === 0 ? 'bg-white/65' : 'bg-parchment-100/65';
-        const roleSubtitle = g === 0
-          ? 'Founding Ancestors'
-          : g === layout.maxGen
-            ? 'Latest Generation'
-            : `Generation ${roman}`;
-
-        swimlanesHtml += `
+      const swimKey = `${layout.maxGen}|${totalWidth}|${LAYER_HEIGHT}`;
+      if (canvasSwimlanesKey !== swimKey) {
+        let swimlanesHtml = '';
+        for (let g = 0; g <= layout.maxGen; g++) {
+          const topY = g * LAYER_HEIGHT;
+          const roman = toRomanNumeral(g + 1);
+          const bgClass = g % 2 === 0 ? 'bg-white/65' : 'bg-parchment-100/65';
+          const roleSubtitle = g === 0
+            ? 'Founding Ancestors'
+            : g === layout.maxGen
+              ? 'Latest Generation'
+              : `Generation ${roman}`;
+          swimlanesHtml += `
           <div style="top:${topY}px; left:0; width:${totalWidth}px; height:${LAYER_HEIGHT}px;" class="absolute ${bgClass} border-b border-parchment-200/90">
             <div class="sticky left-0 inline-flex flex-col justify-center h-full px-4 border-r border-parchment-200/80 bg-white/80 backdrop-blur-2xs" style="width:${LEFT_SWIMLANE_MARGIN - 12}px;">
               <span class="text-[11px] font-bold uppercase tracking-wider text-archival-indigo">GEN ${roman}</span>
@@ -2669,21 +4503,24 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
             </div>
           </div>
         `;
+        }
+        swimlanesLayer.innerHTML = swimlanesHtml;
+        canvasSwimlanesKey = swimKey;
+      }
 
-        jumpPillsHtml += `
+      const jumpKey = String(layout.maxGen);
+      if (canvasJumpKey !== jumpKey) {
+        let jumpPillsHtml = '';
+        for (let g = 0; g <= layout.maxGen; g++) {
+          const roman = toRomanNumeral(g + 1);
+          jumpPillsHtml += `
           <button type="button" data-jump-gen="${g}" class="px-2 py-1 rounded-lg hover:bg-parchment-100 text-slate-700 hover:text-archival-indigo transition">
             Gen ${roman}
           </button>
         `;
-      }
-      const swimKey = layout.maxGen + '|' + totalWidth + '|' + totalHeight;
-      if (canvasSwimlanesKey !== swimKey) {
-        swimlanesLayer.innerHTML = swimlanesHtml;
-        canvasSwimlanesKey = swimKey;
-      }
-      if (canvasJumpKey !== swimKey) {
+        }
         document.getElementById('gen-jump-bar').innerHTML = jumpPillsHtml;
-        canvasJumpKey = swimKey;
+        canvasJumpKey = jumpKey;
       }
 
       const childParentFamilies = {};
@@ -2701,12 +4538,24 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       const activePersonIds = new Set(uiState.highlightedKinship ? uiState.highlightedKinship.pathIds : []);
       const usedEdges = new Set();
       const usedUnions = new Set();
-      const usedNodes = new Set();
 
       Object.values(appState.families).forEach(fam => {
         const pos1 = fam.partner1Id ? layout.nodes[fam.partner1Id] : null;
         const pos2 = fam.partner2Id ? layout.nodes[fam.partner2Id] : null;
         if (!pos1 && !pos2) return;
+        if (view) {
+          const xs = [];
+          const ys = [];
+          if (pos1) { xs.push(pos1.x, pos1.x + CARD_W); ys.push(pos1.y, pos1.y + CARD_H); }
+          if (pos2) { xs.push(pos2.x, pos2.x + CARD_W); ys.push(pos2.y, pos2.y + CARD_H); }
+          (fam.children || []).forEach(c => {
+            const cPos = layout.nodes[c.personId];
+            if (!cPos) return;
+            xs.push(cPos.x, cPos.x + CARD_W);
+            ys.push(cPos.y, cPos.y + CARD_H);
+          });
+          if (xs.length && !overlapsView(Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), view)) return;
+        }
 
         const isKinFamily = activePersonIds.has(fam.partner1Id) && activePersonIds.has(fam.partner2Id);
         let unionX = 0;
@@ -2720,16 +4569,17 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           unionY = leftPos.y + CARD_H / 2;
           unionX = (x1 + x2) / 2;
 
-          const dash = fam.status === 'divorced' ? '5,4' : null;
-          const kinClass = isKinFamily ? 'kinship-edge-active' : '';
+          const lineStyle = unionLineStyle(fam.status);
 
           if (Math.abs(x2 - x1) <= PARTNER_GAP + 8) {
-            const key = 'union-line-' + fam.id;
+            const key = 'union-line:' + fam.id;
             usedEdges.add(key);
             syncSvgEdge(key, svgEl, 'line', {
               x1, y1: unionY, x2, y2: unionY,
-              stroke: '#94A3B8', 'stroke-width': '1.75',
-              'stroke-dasharray': dash, class: kinClass
+              stroke: lineStyle.stroke,
+              'stroke-width': '1.75',
+              'stroke-dasharray': lineStyle.dash,
+              class: isKinFamily ? 'kinship-edge-active' : ''
             });
           } else {
             const c1x = leftPos.x + CARD_W / 2;
@@ -2737,37 +4587,40 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
             const archY = leftPos.y - 16;
             unionX = (c1x + c2x) / 2;
             unionY = archY;
-            const key = 'union-path-' + fam.id;
+            const key = 'union-arch:' + fam.id;
             usedEdges.add(key);
             syncSvgEdge(key, svgEl, 'path', {
               d: `M ${c1x} ${leftPos.y} L ${c1x} ${archY} L ${c2x} ${archY} L ${c2x} ${rightPos.y}`,
-              fill: 'none', stroke: '#94A3B8', 'stroke-width': '1.6',
-              'stroke-dasharray': dash, class: kinClass
+              fill: 'none',
+              stroke: lineStyle.stroke,
+              'stroke-width': '1.6',
+              'stroke-dasharray': lineStyle.dash,
+              class: isKinFamily ? 'kinship-edge-active' : ''
             });
           }
 
           const mYear = extractYearLabel(fam.marriageDate);
-          const unionTitle = fam.status === 'divorced'
-            ? 'Divorced'
-            : mYear
-              ? `Married ${mYear}`
-              : 'Union';
+          const unionSt = normalizeUnionStatus(fam.status);
+          const unionTitle = unionSt === 'married'
+            ? (mYear ? `Married ${mYear}` : 'Union')
+            : unionStatusLabel(unionSt);
 
           usedUnions.add(fam.id);
           let unionEl = canvasDom.unions.get(fam.id);
+          const unionStyle = `left:${unionX - 15}px; top:${unionY - 15}px; width:30px; height:30px;`;
           if (!unionEl) {
             unionEl = document.createElement('div');
-            unionEl.dataset.unionId = fam.id;
-            unionEl.innerHTML = `<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="9.2" cy="12.5" r="4.3" /><circle cx="14.8" cy="12.5" r="4.3" /></svg>`;
+            unionEl.setAttribute('data-union-marker', fam.id);
             unionEl.className = 'absolute rounded-full bg-amber-50/95 border border-amber-200 shadow-2xs flex items-center justify-center text-amber-700 z-10 pointer-events-none';
+            unionEl.innerHTML = `<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
+                <circle cx="9.2" cy="12.5" r="4.3" />
+                <circle cx="14.8" cy="12.5" r="4.3" />
+              </svg>`;
             nodesLayer.appendChild(unionEl);
             canvasDom.unions.set(fam.id, unionEl);
           }
-          unionEl.style.left = (unionX - 15) + 'px';
-          unionEl.style.top = (unionY - 15) + 'px';
-          unionEl.style.width = '30px';
-          unionEl.style.height = '30px';
-          unionEl.title = unionTitle;
+          if (unionEl.getAttribute('style') !== unionStyle) unionEl.setAttribute('style', unionStyle);
+          if (unionEl.getAttribute('title') !== unionTitle) unionEl.setAttribute('title', unionTitle);
         } else {
           const singlePos = pos1 || pos2;
           unionX = singlePos.x + CARD_W / 2;
@@ -2777,11 +4630,12 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         const validChildren = (fam.children || []).filter(c => layout.nodes[c.personId]);
         if (validChildren.length > 0) {
           const busY = layout.familyGutterMap[fam.id] || (unionY + 48);
-          const dropKey = 'drop-' + fam.id;
-          usedEdges.add(dropKey);
-          syncSvgEdge(dropKey, svgEl, 'line', {
+          const stemKey = 'stem:' + fam.id;
+          usedEdges.add(stemKey);
+          syncSvgEdge(stemKey, svgEl, 'line', {
             x1: unionX, y1: unionY, x2: unionX, y2: busY,
-            stroke: '#94A3B8', 'stroke-width': '1.75'
+            stroke: '#94A3B8',
+            'stroke-width': '1.75'
           });
 
           const childConnectors = validChildren.map(c => {
@@ -2802,24 +4656,25 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           const maxBusX = Math.max(...allBusXs);
 
           if (maxBusX > minBusX) {
-            const busKey = 'bus-' + fam.id;
+            const busKey = 'bus:' + fam.id;
             usedEdges.add(busKey);
             syncSvgEdge(busKey, svgEl, 'line', {
               x1: minBusX, y1: busY, x2: maxBusX, y2: busY,
-              stroke: '#94A3B8', 'stroke-width': '1.75'
+              stroke: '#94A3B8',
+              'stroke-width': '1.75'
             });
           }
 
           childConnectors.forEach(cc => {
-            const isAdoptive = cc.linkage === 'adoptive' || cc.linkage === 'step';
+            const lineStyle = linkageLineStyle(cc.linkage);
             const isKinChild = activePersonIds.has(cc.childId) && (activePersonIds.has(fam.partner1Id) || activePersonIds.has(fam.partner2Id));
-            const key = 'child-' + fam.id + '-' + cc.childId;
-            usedEdges.add(key);
-            syncSvgEdge(key, svgEl, 'line', {
+            const childKey = 'child:' + fam.id + ':' + cc.childId;
+            usedEdges.add(childKey);
+            syncSvgEdge(childKey, svgEl, 'line', {
               x1: cc.cx, y1: busY, x2: cc.cx, y2: cc.topY,
-              stroke: isAdoptive ? '#0284C7' : '#94A3B8',
+              stroke: lineStyle.color,
               'stroke-width': '1.75',
-              'stroke-dasharray': isAdoptive ? '5,4' : null,
+              'stroke-dasharray': lineStyle.dashed ? '5,4' : '',
               class: isKinChild ? 'kinship-edge-active' : ''
             });
           });
@@ -2829,12 +4684,14 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       pruneCanvasMap(canvasDom.edges, usedEdges);
       pruneCanvasMap(canvasDom.unions, usedUnions);
 
+      const usedNodes = new Set();
       personIds.forEach(id => {
         const p = appState.persons[id];
         const pos = layout.nodes[id];
         if (!pos) return;
-
         const isSelected = appState.selectedPersonId === id;
+        if (view && !isSelected && id !== appState.centralPersonId && !overlapsView(pos.x, pos.y, CARD_W, CARD_H, view)) return;
+
         const isCentral = appState.centralPersonId === id;
         const isKin = activePersonIds.has(id);
         const displayName = getDisplayName(p);
@@ -2870,6 +4727,9 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
             : 'border-slate-200 bg-slate-100 text-slate-400';
 
         const portraitUrl = p.photoUrl ? safeImageUrl(p.photoUrl) : '';
+        const className = `person-card absolute bg-white border-[1.5px] ${cardBorder} rounded-xl shadow-2xs cursor-pointer flex items-center z-10 ${isSelected ? 'selected' : ''} ${isCentral ? 'central-person' : ''} ${isKin ? 'kinship-highlight' : ''}`;
+        const style = `left:${pos.x}px; top:${pos.y}px; width:${CARD_W}px; height:${CARD_H}px;`;
+        const sig = [displayName, lifespanStr, deceasedLabel, cardAria, isSelected ? '1' : '0', isCentral ? '1' : '0', isKin ? '1' : '0', hasParentBranch ? '1' : '0', isFocusPerson ? '1' : '0', isBranchCollapsed ? '1' : '0', branchTitle, cardBorder, avatarRing, portraitUrl, p.sex || '', canEditTree() ? '1' : '0'].join('\u0001');
         const inner = `
             ${hasParentBranch ? `
               <button
@@ -2892,36 +4752,42 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
             ` : ''}
             ${deceasedCornerHtml(p)}
 
-            <div class="w-11 h-11 rounded-full border ${avatarRing} flex items-center justify-center shrink-0 mt-0.5 overflow-hidden">
+            <div class="card-avatar rounded-full border ${avatarRing} flex items-center justify-center overflow-hidden shrink-0">
               ${portraitUrl
                 ? `<img src="${escapeAttr(portraitUrl)}" alt="" class="w-full h-full object-cover" />`
                 : `<svg class="w-7 h-7" viewBox="0 0 24 24" fill="currentColor">${getSilhouetteSvgInner(p.sex)}</svg>`
               }
             </div>
 
-            <div class="w-full min-w-0 space-y-0.5">
-              <div class="font-sans font-semibold text-[11.5px] leading-tight text-slate-900 line-clamp-2 break-words">
+            <div class="card-text w-full min-w-0">
+              <div class="card-name font-sans font-semibold text-slate-900">
                 ${escapeHtml(displayName)}
               </div>
-              <div class="text-[10.5px] text-slate-500 truncate">
+              <div class="card-lifespan text-slate-500">
                 ${escapeHtml(lifespanStr)}
               </div>
             </div>
 
-            ${(isSelected && canEditTree()) ? `
-              <div class="absolute -bottom-7 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-slate-900 text-white px-2 py-0.5 rounded-full shadow-md text-[10px] font-medium whitespace-nowrap z-20">
-                <button data-quick-rel="parent" class="hover:text-amber-300 px-1 transition">+Parent</button>
-                <span class="text-slate-600">·</span>
-                <button data-quick-rel="spouse" class="hover:text-amber-300 px-1 transition">+Spouse</button>
-                <span class="text-slate-600">·</span>
-                <button data-quick-rel="child" class="hover:text-amber-300 px-1 transition">+Child</button>
-                <span class="text-slate-600">·</span>
-                <button data-quick-rel="sibling" class="hover:text-amber-300 px-1 transition">+Sibling</button>
+            ${canEditTree() ? `
+              <button type="button" data-canvas-quick-edit="${escapeAttr(id)}" class="canvas-card-pencil no-print" aria-label="Edit profile" title="Edit profile">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 20h9"></path><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"></path></svg>
+              </button>
+            ` : ''}
+            ${canEditTree() ? `
+              <div class="canvas-add-bar no-print" role="group" aria-label="Add relative">
+                <div class="canvas-add-bar-inner">
+                  <button type="button" data-quick-rel="parent">+Parent</button>
+                  <span class="canvas-add-bar-sep" aria-hidden="true">·</span>
+                  <button type="button" data-quick-rel="spouse">+Spouse</button>
+                  <span class="canvas-add-bar-sep" aria-hidden="true">·</span>
+                  <button type="button" data-quick-rel="child">+Child</button>
+                  <span class="canvas-add-bar-sep" aria-hidden="true">·</span>
+                  <button type="button" data-quick-rel="sibling">+Sibling</button>
+                </div>
               </div>
             ` : ''}
-        `;
-        const className = `person-card absolute bg-white border-[1.5px] ${cardBorder} rounded-xl px-2 py-2.5 shadow-2xs cursor-pointer flex flex-col items-center justify-between text-center z-10 ${isSelected ? 'selected' : ''} ${isCentral ? 'central-person' : ''} ${isKin ? 'kinship-highlight' : ''}`;
-        const sig = [pos.x, pos.y, className, cardAria, inner].join('\x1f');
+          `;
+
         usedNodes.add(id);
         let el = canvasDom.nodes.get(id);
         if (!el) {
@@ -2931,12 +4797,11 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           el.setAttribute('role', 'button');
           nodesLayer.appendChild(el);
           canvasDom.nodes.set(id, el);
+          el.dataset.canvasSig = '';
         }
-        el.style.left = pos.x + 'px';
-        el.style.top = pos.y + 'px';
-        el.style.width = CARD_W + 'px';
-        el.style.height = CARD_H + 'px';
-        if (el.className !== className) el.className = className;
+        const appliedClass = className + (canEditTree() && addBarHoverId === id ? ' add-bar-open' : '');
+        if (el.className !== appliedClass) el.className = appliedClass;
+        if (el.getAttribute('style') !== style) el.setAttribute('style', style);
         if (el.getAttribute('aria-label') !== cardAria) el.setAttribute('aria-label', cardAria);
         if (el.dataset.canvasSig !== sig) {
           el.innerHTML = inner;
@@ -2945,14 +4810,17 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       });
 
       pruneCanvasMap(canvasDom.nodes, usedNodes);
-      applyCanvasTransform();
+      applyCanvasTransform({ skipRecull: true });
     }
 
-    function applyCanvasTransform() {
+
+    function applyCanvasTransform(opts) {
       const stage = document.getElementById('canvas-stage');
       if (!stage) return;
       stage.style.transform = `translate(${uiState.panX}px, ${uiState.panY}px) scale(${uiState.zoom})`;
-      document.getElementById('btn-zoom-reset').textContent = `${Math.round(uiState.zoom * 100)}%`;
+      const zoomLabel = document.getElementById('btn-zoom-reset');
+      if (zoomLabel) zoomLabel.textContent = `${Math.round(uiState.zoom * 100)}%`;
+      if (!opts || !opts.skipRecull) scheduleVisibleCanvasRefresh();
     }
 
     function fitTreeToScreen() {
@@ -3227,11 +5095,11 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           if (f.partner1Id === person.id || f.partner2Id === person.id) {
             const spId = f.partner1Id === person.id ? f.partner2Id : f.partner1Id;
             const spPerson = spId && appState.persons[spId] ? appState.persons[spId] : null;
-            const unionStatus = f.status === 'divorced' ? 'divorced' : 'married';
+            const unionStatus = normalizeUnionStatus(f.status);
             if (spPerson) {
               spouses.push({
                 person: spPerson,
-                role: unionStatus === 'divorced' ? 'Former spouse' : 'Spouse',
+                role: unionSpouseHeading(unionStatus),
                 kind: 'spouse',
                 famId: f.id,
                 status: unionStatus
@@ -3281,7 +5149,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
             dateRaw: ev.date || '',
             dateFormatted: ev.date ? formatDisplayDate(ev.date, 'long') : 'Date unrecorded',
             place: ev.place || '',
-            spouse: null
+            spouse: null,
           });
         });
 
@@ -3295,16 +5163,33 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
             sortYear: parsed?.year || 9998,
             yearLabel: yearStr,
             ageLabel: ageVal !== null ? `Age ${ageVal}` : '',
-            title: fam.status === 'divorced' ? 'Divorce / Union:' : 'Marriage to:',
+            title: unionFactTitle(fam.status),
             dateRaw: fam.marriageDate || '',
             dateFormatted: fam.marriageDate ? formatDisplayDate(fam.marriageDate, 'short') : '',
             place: fam.marriagePlace || '',
-            unionStatus: fam.status === 'divorced' ? 'divorced' : 'married',
-            spouse
+            unionStatus: normalizeUnionStatus(fam.status),
+            divorceDateRaw: fam.divorceDate || '',
+            divorceDateFormatted: fam.divorceDate ? formatDisplayDate(fam.divorceDate, 'short') : '',
+            divorcePlace: fam.divorcePlace || '',
+            spouse,
           });
         });
 
-        timelineEntries.sort((a, b) => a.sortYear - b.sortYear);
+        spouses.sort((a, b) => comparePersonUnions(appState.families[a.famId], appState.families[b.famId]));
+        spouses.forEach((item, index) => {
+          item.unionIndex = index;
+          item.unionTotal = spouses.length;
+          item.orderLabel = spouses.length > 1 ? ordinalUnionLabel(index, item.status) : '';
+          if (item.orderLabel && item.role === 'Spouse') item.role = item.orderLabel;
+          if (item.orderLabel && item.role === 'Former spouse') item.role = 'Former spouse · ' + item.orderLabel;
+        });
+        spouseUnions.sort((a, b) => comparePersonUnions(a.fam, b.fam));
+        timelineEntries.sort((a, b) => {
+          const famA = appState.families[a.id];
+          const famB = appState.families[b.id];
+          if (a.kind === 'marriage' && b.kind === 'marriage' && famA && famB) return comparePersonUnions(famA, famB);
+          return a.sortYear - b.sortYear;
+        });
         const immediateCount = parents.length + spouses.length + children.length;
 
         body.innerHTML = `
@@ -3324,7 +5209,12 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
                 <div class="px-4 pb-4 space-y-2.5">
                   ${uiState.showPhotoAddForm && editable ? `
                     <form id="form-add-person-photo" class="p-3 rounded-xl bg-stone-50 border border-stone-200 space-y-2">
-                      <input type="url" name="photoUrl" required placeholder="https://example.com/portrait.jpg" title="https:// links only" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg" />
+                      <div class="flex flex-wrap gap-1.5">
+                        <button type="button" class="js-photo-camera px-3 py-2 min-h-[44px] rounded-lg bg-white border border-stone-300 text-xs font-semibold text-slate-800" data-i18n="takePhoto">Take photo</button>
+                        <button type="button" class="js-photo-gallery px-3 py-2 min-h-[44px] rounded-lg bg-white border border-stone-300 text-xs font-semibold text-slate-800" data-i18n="chooseGallery">Choose from gallery</button>
+                      </div>
+                      <p class="text-[11px] text-slate-500 leading-relaxed">The photo is resized on this device, then stored in Firebase Storage (you must enable Storage in the Firebase console once). You can still paste an https:// link below.</p>
+                      <input type="url" name="photoUrl" placeholder="https://example.com/portrait.jpg" title="https:// links only" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg" />
                       <input type="text" name="caption" placeholder="Caption (e.g., Wedding Portrait 2007)" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg" />
                       <label class="flex items-center gap-1.5 text-[11px] text-slate-700">
                         <input type="checkbox" name="setAsAvatar" checked />
@@ -3337,7 +5227,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
                     </form>
                   ` : ''}
 
-                  ${(!redacted && isBlockedImageUrl(person.photoUrl)) || mediaItems.some(m => isBlockedImageUrl(m.url)) ? `
+                  ${(isBlockedImageUrl(person.photoUrl) || mediaItems.some(m => isBlockedImageUrl(m.url))) ? `
                     <p class="text-[11px] text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 leading-relaxed" role="status">${escapeHtml(
                       describeBlockedImageUrl(isBlockedImageUrl(person.photoUrl) ? person.photoUrl : (mediaItems.find(m => isBlockedImageUrl(m.url)) || {}).url)
                     )}</p>
@@ -3405,24 +5295,11 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
                           </span>
                           <div class="min-w-0">
                             <div class="text-xs font-semibold text-slate-900 truncate">${escapeHtml(getDisplayNameWithMaiden(item.person))}</div>
-                            <div class="text-[11px] text-slate-500">${escapeHtml(item.role)} · ${escapeHtml(getCardLifespanLabel(item.person))}</div>
+                            <div class="text-[11px] text-slate-500">${escapeHtml(item.role)}${getCardLifespanLabel(item.person) ? ' · ' + escapeHtml(getCardLifespanLabel(item.person)) : ''}</div>
                           </div>
                         </div>
                         <span class="text-slate-400 text-xs">›</span>
                       </button>
-                      ${editable && (item.kind === 'child' || item.kind === 'parent') ? `
-                        <select data-set-child-linkage="${escapeAttr(item.famId)}" data-set-child-id="${escapeAttr(item.kind === 'child' ? item.person.id : person.id)}" aria-label="Parent link type for ${escapeAttr(getDisplayName(item.kind === 'child' ? item.person : person))}" class="shrink-0 max-w-[7.5rem] px-1.5 py-1 text-[11px] bg-white border border-stone-300 rounded-lg">
-                          <option value="biological" ${item.linkage === 'biological' ? 'selected' : ''}>Biological</option>
-                          <option value="adoptive" ${item.linkage === 'adoptive' ? 'selected' : ''}>Adopted</option>
-                          <option value="step" ${item.linkage === 'step' ? 'selected' : ''}>Step</option>
-                        </select>
-                      ` : ''}
-                      ${editable && item.kind === 'spouse' ? `
-                        <select data-set-union-status="${escapeAttr(item.famId)}" aria-label="Union status with ${escapeAttr(getDisplayName(item.person))}" class="shrink-0 max-w-[7.5rem] px-1.5 py-1 text-[11px] bg-white border border-stone-300 rounded-lg">
-                          <option value="married" ${item.status === 'married' ? 'selected' : ''}>Married</option>
-                          <option value="divorced" ${item.status === 'divorced' ? 'selected' : ''}>Divorced</option>
-                        </select>
-                      ` : ''}
                     </div>
                   `).join('') || `<p class="text-xs text-stone-500 italic">No parents, spouses, or children linked yet.</p>`}
                 </div>
@@ -3498,6 +5375,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
 
                                 ${item.dateFormatted ? `<div class="text-xs text-slate-600">${escapeHtml(item.dateFormatted)}</div>` : ''}
                                 ${item.place ? `<div class="text-xs text-slate-600">${escapeHtml(item.place)}</div>` : ''}
+                                ${item.kind === 'marriage' && item.unionStatus && item.unionStatus !== 'married' ? `<div class="text-xs text-slate-600">${escapeHtml(unionStatusLabel(item.unionStatus))}${item.divorceDateFormatted ? ' · ' + escapeHtml(item.divorceDateFormatted) : ''}${item.divorcePlace ? ' · ' + escapeHtml(item.divorcePlace) : ''}</div>` : ''}
                               </div>
 
                               <!-- Right Circular Edit Pencil Button -->
@@ -3525,9 +5403,14 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
                                 ${item.kind === 'marriage' ? `
                                   <label class="block text-[11px] font-medium text-slate-700">Union status
                                     <select name="unionStatus" class="mt-1 w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
-                                      <option value="married" ${item.unionStatus === 'divorced' ? '' : 'selected'}>Married</option>
-                                      <option value="divorced" ${item.unionStatus === 'divorced' ? 'selected' : ''}>Divorced</option>
+                                      ${unionStatusOptionsHtml(item.unionStatus)}
                                     </select>
+                                  </label>
+                                  <label class="block text-[11px] font-medium text-slate-700">End date
+                                    <input name="divorceDate" type="text" value="${escapeAttr(item.divorceDateRaw || '')}" placeholder="Date (e.g. July 4 1977)" class="mt-1 w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg" />
+                                  </label>
+                                  <label class="block text-[11px] font-medium text-slate-700">End place
+                                    <input name="divorcePlace" type="text" value="${escapeAttr(item.divorcePlace || '')}" placeholder="Place" class="mt-1 w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg" />
                                   </label>
                                 ` : ''}
                                 <div class="flex items-center justify-between">
@@ -3652,6 +5535,10 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
                 </div>
                 <div>
                   <label class="block text-[11px] font-medium text-slate-600 mb-1">Portrait Photo URL</label>
+                  ${editable ? `<div class="flex flex-wrap gap-1.5 mb-1.5">
+                    <button type="button" class="js-photo-camera px-3 py-2 min-h-[40px] rounded-lg bg-white border border-stone-300 text-xs font-semibold text-slate-800" data-i18n="takePhoto">Take photo</button>
+                    <button type="button" class="js-photo-gallery px-3 py-2 min-h-[40px] rounded-lg bg-white border border-stone-300 text-xs font-semibold text-slate-800" data-i18n="chooseGallery">Choose from gallery</button>
+                  </div>` : ''}
                   <input name="photoUrl" type="url" placeholder="https://..." value="${escapeAttr(person.photoUrl || '')}" ${editable ? '' : 'disabled'} class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg" />
                   ${isBlockedImageUrl(person.photoUrl) ? `<p class="text-[11px] text-amber-900 leading-relaxed">${escapeHtml(describeBlockedImageUrl(person.photoUrl))}</p>` : ''}
                 </div>
@@ -3700,8 +5587,12 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
                       <option value="marriage">Marriage / Partnership with Existing Person</option>
                       <option value="adopt_child">Adopt Existing Person as Child</option>
                       <option value="step_child">Add Existing Person as Stepchild</option>
+                      <option value="foster_child">Add Existing Person as Foster Child</option>
+                      <option value="guardian_child">Add Existing Person as Ward (guardian)</option>
                       ${allFamiliesArr.length > 0 ? `<option value="adoptive_parents">Assign Adoptive Parents to This Person</option>` : ''}
                       ${allFamiliesArr.length > 0 ? `<option value="step_parents">Assign Step-Parents to This Person</option>` : ''}
+                      ${allFamiliesArr.length > 0 ? `<option value="foster_parents">Assign Foster Parents to This Person</option>` : ''}
+                      ${allFamiliesArr.length > 0 ? `<option value="guardian_parents">Assign Guardians to This Person</option>` : ''}
                     </select>
                   </div>
 
@@ -3905,24 +5796,113 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     }
 
     function normalizeLinkage(linkage) {
-      return (linkage === 'adoptive' || linkage === 'step') ? linkage : 'biological';
+      return (linkage === 'adoptive' || linkage === 'step' || linkage === 'foster' || linkage === 'guardian') ? linkage : 'biological';
     }
 
     function childRoleLabel(linkage) {
       if (linkage === 'adoptive') return 'Adopted child';
       if (linkage === 'step') return 'Stepchild';
+      if (linkage === 'foster') return 'Foster child';
+      if (linkage === 'guardian') return 'Ward';
       return 'Child';
     }
 
     function parentRoleLabel(linkage) {
       if (linkage === 'adoptive') return 'Adoptive parent';
       if (linkage === 'step') return 'Step-parent';
+      if (linkage === 'foster') return 'Foster parent';
+      if (linkage === 'guardian') return 'Guardian';
       return 'Parent';
     }
 
+    function linkageLineStyle(linkage) {
+      const kind = normalizeLinkage(linkage);
+      if (kind === 'adoptive' || kind === 'step') return { color: '#0284C7', dashed: true };
+      if (kind === 'foster') return { color: '#0F766E', dashed: true };
+      if (kind === 'guardian') return { color: '#7C3AED', dashed: true };
+      return { color: '#94A3B8', dashed: false };
+    }
+
+    function parentIdsOfPerson(personId, stateObj) {
+      const state = stateObj || appState;
+      const ids = [];
+      Object.values(state.families || {}).forEach(fam => {
+        (fam.children || []).forEach(c => {
+          if ((c && (c.personId || c)) !== personId) return;
+          if (fam.partner1Id) ids.push(fam.partner1Id);
+          if (fam.partner2Id) ids.push(fam.partner2Id);
+        });
+      });
+      return [...new Set(ids)];
+    }
+
+    function sharedParentIds(personA, personB, stateObj) {
+      const a = new Set(parentIdsOfPerson(personA, stateObj));
+      return parentIdsOfPerson(personB, stateObj).filter(id => a.has(id));
+    }
+
+    function familyMarriageYear(fam) {
+      if (!fam || !fam.marriageDate) return 9999;
+      if (typeof parseFlexibleDateParts === 'function') {
+        const parsed = parseFlexibleDateParts(fam.marriageDate);
+        if (parsed && parsed.year) return Number(parsed.year);
+      }
+      const m = String(fam.marriageDate).match(/\b((?:1[5-9]|20)\d{2})\b/);
+      return m ? Number(m[1]) : 9999;
+    }
+
+    function comparePersonUnions(a, b) {
+      const ao = Number.isFinite(Number(a.unionOrder)) ? Number(a.unionOrder) : null;
+      const bo = Number.isFinite(Number(b.unionOrder)) ? Number(b.unionOrder) : null;
+      if (ao != null || bo != null) return (ao == null ? 9999 : ao) - (bo == null ? 9999 : bo) || String(a.id).localeCompare(String(b.id));
+      return familyMarriageYear(a) - familyMarriageYear(b) || String(a.id).localeCompare(String(b.id));
+    }
+
+    function unionsForPerson(personId, stateObj) {
+      const state = stateObj || appState;
+      return Object.values(state.families || {})
+        .filter(fam => fam && (fam.partner1Id === personId || fam.partner2Id === personId))
+        .sort(comparePersonUnions);
+    }
+
+    function ordinalUnionLabel(index, status) {
+      const n = index + 1;
+      const end = n === 1 ? 'st' : n === 2 ? 'nd' : n === 3 ? 'rd' : 'th';
+      const union = unionIsFormer(status) ? 'union' : 'marriage';
+      return n + end + ' ' + union;
+    }
+
+    function applyUnionOrderSwap(stateObj, personId, famId, direction) {
+      const list = unionsForPerson(personId, stateObj);
+      const idx = list.findIndex(fam => fam.id === famId);
+      const next = idx + direction;
+      if (idx < 0 || next < 0 || next >= list.length) return false;
+      const ordered = list.slice();
+      const tmp = ordered[idx];
+      ordered[idx] = ordered[next];
+      ordered[next] = tmp;
+      ordered.forEach((fam, i) => { stateObj.families[fam.id].unionOrder = i + 1; });
+      return true;
+    }
+
     function qualifyKinTitle(title, linkages) {
-      const kinds = (linkages || []).filter(l => l === 'step' || l === 'adoptive');
+      const kinds = (linkages || []).filter(l => l === 'step' || l === 'adoptive' || l === 'foster' || l === 'guardian');
       if (!kinds.length || !title) return title;
+      if (kinds.includes('foster')) {
+        const exactFoster = {
+          Son: 'Foster son', Daughter: 'Foster daughter', Child: 'Foster child',
+          Father: 'Foster father', Mother: 'Foster mother', Parent: 'Foster parent',
+          Brother: 'Foster brother', Sister: 'Foster sister', Sibling: 'Foster sibling'
+        };
+        return exactFoster[title] || ('Foster ' + title);
+      }
+      if (kinds.includes('guardian')) {
+        const exactGuard = {
+          Son: 'Ward', Daughter: 'Ward', Child: 'Ward',
+          Father: 'Guardian', Mother: 'Guardian', Parent: 'Guardian'
+        };
+        return exactGuard[title] || title;
+      }
       const step = kinds.includes('step');
       const exact = step ? {
         Son: 'Stepson', Daughter: 'Stepdaughter', Child: 'Stepchild',
@@ -4019,6 +5999,9 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           }
 
           title = qualifyKinTitle(title, pcLinks);
+          if ((title === 'Brother' || title === 'Sister' || title === 'Sibling') && sharedParentIds(fromId, toId).length === 1) {
+            title = title === 'Brother' ? 'Half-brother' : title === 'Sister' ? 'Half-sister' : 'Half-sibling';
+          }
           return {
             title,
             pathIds: path.map(s => s.id)
@@ -4210,11 +6193,13 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       const caption = document.getElementById('print-tree-caption');
       const treeTitle = (appState.tree && appState.tree.title) || getSiteTitle();
       if (uiState.viewMode !== 'canvas') uiState.viewMode = 'canvas';
+      forceFullCanvasDraw = true;
       if (wanted === 'full') {
         uiState.focusMode = false;
         if (caption) caption.textContent = treeTitle + ' — Full tree';
         renderAll();
         fitTreeToScreen();
+        renderVisualCanvas(computeTreeLayout(), { skipRecull: true });
       } else {
         const pid = getFocusPersonId() || appState.selectedPersonId || appState.centralPersonId;
         if (pid) setFocusPerson(pid, { enableFocus: true, render: false });
@@ -4222,6 +6207,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         if (caption) caption.textContent = treeTitle + ' — Current branch';
         renderAll();
         fitTreeToScreen();
+        renderVisualCanvas(computeTreeLayout(), { skipRecull: true });
       }
       document.body.classList.add('printing');
       document.body.setAttribute('data-print-scope', wanted);
@@ -4229,6 +6215,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       const restore = () => {
         if (restored) return;
         restored = true;
+        forceFullCanvasDraw = false;
         window.clearTimeout(restoreTimer);
         window.removeEventListener('afterprint', restore);
         document.body.classList.remove('printing');
@@ -4253,6 +6240,45 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     }
 
     function focusNeighborPersonCard(current, key) {
+      const currentId = current && current.getAttribute && current.getAttribute('data-person-card');
+      const layout = lastRenderedLayout || computeTreeLayout();
+      const curPos = currentId && layout.nodes ? layout.nodes[currentId] : null;
+      if (curPos) {
+        const cx = curPos.x + CARD_W / 2;
+        const cy = curPos.y + CARD_H / 2;
+        let bestId = null;
+        let bestScore = Infinity;
+        Object.keys(layout.nodes).forEach(id => {
+          if (id === currentId) return;
+          const pos = layout.nodes[id];
+          const dx = (pos.x + CARD_W / 2) - cx;
+          const dy = (pos.y + CARD_H / 2) - cy;
+          let aligned = false;
+          let primary = 0;
+          let secondary = 0;
+          if (key === 'ArrowRight') { aligned = dx > 8; primary = dx; secondary = Math.abs(dy); }
+          else if (key === 'ArrowLeft') { aligned = dx < -8; primary = -dx; secondary = Math.abs(dy); }
+          else if (key === 'ArrowDown') { aligned = dy > 8; primary = dy; secondary = Math.abs(dx); }
+          else if (key === 'ArrowUp') { aligned = dy < -8; primary = -dy; secondary = Math.abs(dx); }
+          if (!aligned) return;
+          const score = primary + secondary * 1.6;
+          if (score < bestScore) { bestScore = score; bestId = id; }
+        });
+        if (bestId) {
+          const bestPos = layout.nodes[bestId];
+          const viewport = document.getElementById('canvas-viewport');
+          const vw = (viewport && viewport.clientWidth) || 960;
+          const vh = (viewport && viewport.clientHeight) || 640;
+          uiState.panX = vw / 2 - (bestPos.x + CARD_W / 2) * uiState.zoom;
+          uiState.panY = vh / 2 - (bestPos.y + CARD_H / 2) * uiState.zoom;
+          renderVisualCanvas(layout, { skipRecull: true });
+          const best = document.querySelector('[data-person-card="' + CSS.escape(bestId) + '"]');
+          if (best) {
+            best.focus();
+            return best;
+          }
+        }
+      }
       const cards = Array.from(document.querySelectorAll('[data-person-card]'));
       if (!cards.length) return null;
       const cur = current.getBoundingClientRect();
@@ -4452,8 +6478,8 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         renderAll();
       });
       document.getElementById('btn-insp-circle-edit')?.addEventListener('click', () => {
-        uiState.inspectorTab = 'edit';
-        renderAll();
+        const id = appState.selectedPersonId || appState.centralPersonId;
+        if (id) openQuickEditModal(id);
       });
       document.getElementById('btn-insp-circle-add')?.addEventListener('click', () => {
         uiState.inspectorTab = 'add';
@@ -4464,6 +6490,9 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         uiState.accordions.photos = true;
         uiState.showPhotoAddForm = true;
         renderAll();
+        if (typeof canEditTree === 'function' && canEditTree()) {
+          document.getElementById('input-photo-camera')?.click();
+        }
       });
       document.getElementById('btn-insp-circle-more')?.addEventListener('click', e => {
         e.stopPropagation();
@@ -4610,6 +6639,19 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
 
       // Canvas Pan, Zoom & Generation Jump
       const viewport = document.getElementById('canvas-viewport');
+      viewport.addEventListener('pointerover', (e) => {
+        if (!isMouseLikePointer(e)) return;
+        const card = e.target.closest && e.target.closest('.person-card');
+        if (card) openAddBarOnCard(card);
+      });
+      viewport.addEventListener('pointerout', (e) => {
+        if (!isMouseLikePointer(e)) return;
+        const card = e.target.closest && e.target.closest('.person-card');
+        if (!card) return;
+        const next = e.relatedTarget;
+        if (next && (card === next || card.contains(next))) return;
+        scheduleHideAddBar();
+      });
       // Pointer events cover mouse, pen and touch. One pointer pans; two pointers pinch-zoom.
       const activePointers = new Map();
       let pinchStart = null;
@@ -4687,6 +6729,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         if (pressedCard) { pressedCards.delete(e.pointerId); canvasPinnedNodes.delete(pressedCard); }
         if (activePointers.size < 2) pinchStart = null;
         if (activePointers.size === 0) {
+          if (pressedCard && dragMoved) scheduleVisibleCanvasRefresh();
           if (uiState.isDragging && dragMoved) suppressNextClick = true;
           uiState.isDragging = false;
           viewport.classList.remove('cursor-grabbing');
@@ -4762,6 +6805,8 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       const openPrint = () => openPrintTreeDialog();
       document.getElementById('btn-print-tree')?.addEventListener('click', openPrint);
       document.getElementById('btn-print-tree-menu')?.addEventListener('click', openPrint);
+      document.getElementById('btn-merge-duplicates-menu')?.addEventListener('click', () => openMergeDuplicatesDialog());
+      bindMergeDuplicatesUi();
       document.getElementById('btn-print-branch')?.addEventListener('click', () => printTreeView('branch'));
       document.getElementById('btn-print-full')?.addEventListener('click', () => printTreeView('full'));
       document.getElementById('print-tree-modal')?.addEventListener('click', (e) => {
@@ -4817,7 +6862,20 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         const quickRelBtn = e.target.closest('[data-quick-rel]');
         if (quickRelBtn) {
           e.stopPropagation();
-          addNewRelativeToPerson(appState.selectedPersonId, quickRelBtn.dataset.quickRel);
+          const card = quickRelBtn.closest('[data-person-card]');
+          const pid = (card && card.dataset.personCard) || appState.selectedPersonId;
+          addNewRelativeToPerson(pid, quickRelBtn.dataset.quickRel);
+          return;
+        }
+
+        const canvasEditBtn = e.target.closest && e.target.closest('[data-canvas-quick-edit]');
+        if (canvasEditBtn) {
+          e.stopPropagation();
+          const pid = canvasEditBtn.getAttribute('data-canvas-quick-edit');
+          if (pid) {
+            closeInspector();
+            openQuickEditModal(pid);
+          }
           return;
         }
 
@@ -5002,7 +7060,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         if (unionSel) {
           if (!canEditTree()) return;
           const famId = unionSel.dataset.setUnionStatus;
-          const status = unionSel.value === 'divorced' ? 'divorced' : 'married';
+          const status = normalizeUnionStatus(unionSel.value);
           const fam = appState.families[famId];
           if (!fam) return;
           commitMutation(`Marked union as ${status}`, s => {
@@ -5012,13 +7070,69 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         }
         if (e.target.id === 'prov-link-type') {
           const val = e.target.value;
-          const assignParents = val === 'adoptive_parents' || val === 'step_parents';
+          const assignParents = val === 'adoptive_parents' || val === 'step_parents' || val === 'foster_parents' || val === 'guardian_parents';
           document.getElementById('prov-target-person-wrap')?.classList.toggle('hidden', assignParents);
           document.getElementById('prov-adoptive-fam-wrap')?.classList.toggle('hidden', !assignParents);
           const famLabel = document.querySelector('#prov-adoptive-fam-wrap label');
-          if (famLabel) famLabel.textContent = val === 'step_parents' ? 'Select Step Couple / Family Unit' : 'Select Adoptive Couple / Family Unit';
+          if (famLabel) {
+            famLabel.textContent = val === 'step_parents' ? 'Select Step Couple / Family Unit'
+              : val === 'foster_parents' ? 'Select Foster Couple / Family Unit'
+              : val === 'guardian_parents' ? 'Select Guardian Couple / Family Unit'
+              : 'Select Adoptive Couple / Family Unit';
+          }
           document.getElementById('prov-marriage-meta-wrap')?.classList.toggle('hidden', val !== 'marriage');
         }
+      });
+
+
+      document.addEventListener('change', (e) => {
+        if (e.target && (e.target.id === 'ui-language-select' || e.target.id === 'ui-language-select-menu')) {
+          setUiLanguage(e.target.value);
+        }
+      });
+      document.addEventListener('click', (e) => {
+        const moveUnion = e.target.closest && e.target.closest('[data-move-union]');
+        if (moveUnion) {
+          if (!canEditTree()) return;
+          const famId = moveUnion.dataset.moveUnionFam;
+          const personId = moveUnion.dataset.moveUnionPerson;
+          const direction = moveUnion.dataset.moveUnion === 'up' ? -1 : 1;
+          commitMutation('Reordered marriages', s => {
+            applyUnionOrderSwap(s, personId, famId, direction);
+          }, 'Relationship');
+          return;
+        }
+        if (e.target && e.target.closest && e.target.closest('.js-photo-camera')) {
+          document.getElementById('input-photo-camera')?.click();
+        }
+        if (e.target && e.target.closest && e.target.closest('.js-photo-gallery')) {
+          document.getElementById('input-photo-gallery')?.click();
+        }
+      });
+      document.addEventListener('change', (e) => {
+        if (!e.target || (e.target.id !== 'input-photo-camera' && e.target.id !== 'input-photo-gallery')) return;
+        const file = e.target.files && e.target.files[0];
+        e.target.value = '';
+        const personId = (typeof appState !== 'undefined' && appState.selectedPersonId) || '';
+        if (!file || !personId) {
+          if (file && !personId) showToast('Select a person first, then add a photo.');
+          return;
+        }
+        const captionInput = document.querySelector('#form-add-person-photo input[name="caption"]');
+        const avatarInput = document.querySelector('#form-add-person-photo input[name="setAsAvatar"]');
+        const caption = captionInput ? captionInput.value.trim() : '';
+        const setAsAvatar = avatarInput ? avatarInput.checked : true;
+        showToast('Resizing and uploading the photo…');
+        saveUploadedPortrait(personId, file, { caption, setAsAvatar })
+          .then(() => {
+            if (typeof uiState !== 'undefined') uiState.showPhotoAddForm = false;
+            if (typeof renderAll === 'function') renderAll();
+            showToast('Photo uploaded.');
+          })
+          .catch(err => {
+            console.error(err);
+            showToast(err && err.message ? err.message : 'Could not upload that photo.');
+          });
       });
 
       document.addEventListener('submit', e => {
@@ -5055,7 +7169,8 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
             const p = s.persons[s.selectedPersonId];
             if (!p) return;
             p.events = p.events || [];
-            p.events.push({ id: generateId('ev'), type, date, place });
+            const ev = { id: generateId('ev'), type, date, place };
+            p.events.push(ev);
             if (type === 'DEAT') p.livingStatus = 'deceased';
           });
           uiState.showFactAddForm = false;
@@ -5079,14 +7194,18 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
               if (ev) {
                 ev.date = factDate;
                 ev.place = factPlace;
-              }
+                  }
             } else if (kind === 'marriage') {
               const fam = s.families[id];
               if (fam) {
                 fam.marriageDate = factDate;
                 fam.marriagePlace = factPlace;
-                const status = (fd.get('unionStatus') || '').trim();
-                if (status === 'divorced' || status === 'married') fam.status = status;
+                const status = normalizeUnionStatus(fd.get('unionStatus'));
+                fam.status = status;
+                if (unionShowsDivorceFields(status)) {
+                  fam.divorceDate = (fd.get('divorceDate') || '').trim();
+                  fam.divorcePlace = (fd.get('divorcePlace') || '').trim();
+                }
               }
             }
           });
@@ -5191,9 +7310,9 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
                 if (mPlace) existingFam.marriagePlace = mPlace;
               }
             }, 'Relationship');
-          } else if (linkType === 'adopt_child' || linkType === 'step_child') {
+          } else if (linkType === 'adopt_child' || linkType === 'step_child' || linkType === 'foster_child' || linkType === 'guardian_child') {
             const childId = fd.get('targetPersonId');
-            const linkage = linkType === 'step_child' ? 'step' : 'adoptive';
+            const linkage = linkType === 'step_child' ? 'step' : linkType === 'foster_child' ? 'foster' : linkType === 'guardian_child' ? 'guardian' : 'adoptive';
             if (!childId || childId === anchorId) return;
             if (wouldCreateAncestorCycle(anchorId, childId)) {
               showToast(linkage === 'step' ? 'Blocked: Cannot add an ancestor as a stepchild (would create a circular loop).' : 'Blocked: Cannot adopt an ancestor (would create a circular loop).');
@@ -5212,10 +7331,10 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
               if (rec) rec.linkage = linkage;
               else fam.children.push({ personId: childId, linkage });
             }, 'Relationship');
-          } else if (linkType === 'adoptive_parents' || linkType === 'step_parents') {
+          } else if (linkType === 'adoptive_parents' || linkType === 'step_parents' || linkType === 'foster_parents' || linkType === 'guardian_parents') {
             const famId = fd.get('targetFamilyId');
             const fam = appState.families[famId];
-            const linkage = linkType === 'step_parents' ? 'step' : 'adoptive';
+            const linkage = linkType === 'step_parents' ? 'step' : linkType === 'foster_parents' ? 'foster' : linkType === 'guardian_parents' ? 'guardian' : 'adoptive';
             if (!fam) return;
             if ((fam.partner1Id && wouldCreateAncestorCycle(fam.partner1Id, anchorId)) ||
                 (fam.partner2Id && wouldCreateAncestorCycle(fam.partner2Id, anchorId))) {
@@ -5422,8 +7541,11 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     }
 
     initEvents();
+    initQuickEdit();
     initHeaderOverflowMenu('btn-header-more', 'header-more-menu', 'app-header');
+
     initAccessibleModals(['modal-dialog', 'modal-kinship'], () => {
+      if (quickEditIsOpen()) { closeQuickEditModal(); return; }
       const menu = document.getElementById('insp-more-menu');
       const search = document.getElementById('search-results-dropdown');
       const pop = document.getElementById('popover-gen-depth');
@@ -5438,6 +7560,12 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       window.__TREE = {
         getState: () => appState,
         getUi: () => uiState,
+        // Swap in a lock manager (tests pass a fake that mimics src/edit-locks.js).
+        setEditLockManager(manager) { stopEditLocks(); editLockManager = manager; if (manager && manager.watch) manager.watch(); renderAll(); },
+        applyEditLockUi: () => applyEditLockUi(),
+        assembleStateFromDocs,
+        prepareMainWrite,
+        setLatestMainData: (d) => { latestMainData = d; },
         load(state) {
           appState = normalizeAppState(JSON.parse(JSON.stringify(state)));
           const email = (appState.superAdminEmail || getConfiguredSuperAdminEmail() || 'owner@example.com').toLowerCase();
@@ -5448,14 +7576,40 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           firestoreAccessDenied = false;
           delete uiState.privacyMode;
           delete uiState.revealLivingInInspector;
+          invalidateTreeLayoutCache();
           renderAll();
           return { people: Object.keys(appState.persons).length };
         },
         renderAll,
         openInspector,
+        openQuickEditModal,
+        closeQuickEditModal,
+        dateStringToQe,
+        qeToDateString,
+        normalizeUnionStatus,
+        unionLineStyle,
+        unionSpouseHeading,
+        unionStatusLabel,
+        undo,
+        redo,
         setView(mode) { uiState.viewMode = mode; renderAll(); },
         setZoom(z) { uiState.zoom = z; applyCanvasTransform(); },
         fitTreeToScreen,
+        measureCanvasRender,
+        invalidateTreeLayoutCache,
+        normalizeLinkage,
+        childRoleLabel,
+        parentRoleLabel,
+        qualifyKinTitle,
+        computeKinship,
+        sharedParentIds,
+        unionsForPerson,
+        applyUnionOrderSwap,
+        comparePersonUnions,
+        getUiLanguage,
+        setUiLanguage,
+        t,
+        applyI18n,
         getCardLifespanLabel,
         getVitalSummary,
         getHeaderVitalLine,
@@ -5464,6 +7618,28 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         getDeceasedLabel,
         deceasedCornerHtml,
         commitMutation,
+        findDuplicatePairs,
+        mergePeopleIntoState,
+        openMergeDuplicatesDialog,
+        compressImageBlob,
+        collectInlinePhotos,
+        setTestStorageUpload,
+        setTestStorageDelete,
+        isOurStoragePortraitUrl,
+        storagePathFromPortraitUrl,
+        collectOurPortraitUrlsFromState,
+        cleanupOrphanStoragePortraits,
+        deleteOurStoragePortrait,
+        isOfflineWriteError,
+        formatFirestoreError,
+        OFFLINE_SAVE_MESSAGE,
+        openFirestoreDatabase,
+
+        isAppCheckConfigured,
+        getAppCheckOptions,
+        startAppCheckIfConfigured,
+        migrateInlinePhotos,
+        saveUploadedPortrait,
         captureDomainSnapshot,
         estimateAllStorage,
         prepareLogWrite,
@@ -5505,6 +7681,8 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         navigator.serviceWorker.register(swUrl, { scope: '/' }).catch(() => {});
       } catch (e) {}
     }
+    ensureLanguageSwitcher();
+    applyI18n(document);
     registerPwa();
 
     const params = new URLSearchParams(location.search);

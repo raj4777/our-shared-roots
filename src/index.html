@@ -20,6 +20,18 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,500;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet" />
   <style>
+
+    html[lang="hi"] body, html[lang="mr"] body,
+    html[lang="hi"] button, html[lang="mr"] button,
+    html[lang="hi"] input, html[lang="mr"] input,
+    html[lang="hi"] select, html[lang="mr"] select,
+    html[lang="hi"] textarea, html[lang="mr"] textarea {
+      font-family: "Noto Sans Devanagari", Inter, system-ui, sans-serif;
+    }
+    html[lang="hi"] .font-serif, html[lang="mr"] .font-serif {
+      font-family: "Noto Sans Devanagari", Newsreader, serif;
+    }
+
     html, body {
       height: 100%;
       margin: 0;
@@ -50,16 +62,61 @@
     }
 
     .person-card {
+      box-sizing: border-box;
+      overflow: visible;
+      padding: 8px 10px;
+      gap: 8px;
+      flex-direction: row;
+      align-items: center;
       transition: box-shadow 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+    }
+    .person-card .card-avatar {
+      width: 64px;
+      height: 64px;
+      flex-shrink: 0;
+    }
+    .person-card .card-avatar svg {
+      width: 36px;
+      height: 36px;
+    }
+    .person-card .card-text {
+      min-width: 0;
+      flex: 1;
+      text-align: left;
+      padding-right: 16px; /* keep name/dates clear of the bottom-right pencil */
+    }
+    .person-card .card-name {
+      font-size: 12px;
+      line-height: 1.25;
+      font-weight: 600;
+      text-align: left;
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      overflow: hidden;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .person-card .card-lifespan {
+      margin-top: 2px;
+      font-size: 10.5px;
+      line-height: 1.3;
+      text-align: left;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .person-card:hover {
       box-shadow: 0 10px 24px -4px rgba(30, 41, 59, 0.12), 0 4px 10px -2px rgba(30, 41, 59, 0.06);
-      z-index: 18;
+      z-index: 22;
     }
     .person-card.selected {
       border-color: #2E3A59 !important;
       box-shadow: 0 0 0 3px rgba(46, 58, 89, 0.2), 0 12px 24px -4px rgba(30, 41, 59, 0.14);
       z-index: 20 !important;
+    }
+    .person-card.selected:hover {
+      z-index: 22 !important;
     }
     .person-card.central-person {
       box-shadow: 0 0 0 2.5px rgba(46, 58, 89, 0.25), 0 8px 20px -4px rgba(46, 58, 89, 0.15);
@@ -200,6 +257,7 @@
         #kinship-banner,
         #inspector-drawer,
         #toast-banner,
+        #modal-quick-edit,
         #header-more-menu,
         #print-tree-modal,
         #gen-jump-bar,
@@ -237,7 +295,7 @@
       outline-offset: 3px;
     }
 
-    /* ---- Shared accessibility & polish layer ---- */
+    /* ---- Shared accessibility & polish layer (Family Tree) ---- */
     :focus { outline: none; }
     :focus-visible {
       outline: 2px solid #2E3A59;
@@ -284,6 +342,115 @@
     @media (hover: none) {
       .touch-visible { display: flex !important; opacity: 1 !important; }
     }
+    /* Small discreet canvas pencil: hover on desktop, selected on touch. */
+    .person-card .canvas-card-pencil {
+      position: absolute;
+      z-index: 21;
+      right: 3px;
+      bottom: 3px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: #64748b;
+      line-height: 1;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+    }
+    .person-card .canvas-card-pencil:hover,
+    .person-card .canvas-card-pencil:focus-visible {
+      color: #1e293b;
+      background: rgba(255,255,255,0.92);
+    }
+    .person-card:hover .canvas-card-pencil,
+    .person-card .canvas-card-pencil:focus-visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    @media (hover: none) {
+      .person-card .canvas-card-pencil {
+        opacity: 0;
+        pointer-events: none;
+      }
+      .person-card.selected .canvas-card-pencil {
+        opacity: 1;
+        pointer-events: auto;
+        background: rgba(255,255,255,0.92);
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.1);
+      }
+    }
+
+    /* Add bar: hover on any editable card (desktop), selected on touch.
+       padding-top is a hover bridge so the pointer can travel from the card
+       onto the pill without a flicker gap. The pill sits below the card so
+       it does not overlap the bottom-right pencil. */
+    .person-card .canvas-add-bar {
+      position: absolute;
+      left: 50%;
+      top: 100%;
+      transform: translateX(-50%);
+      padding-top: 8px;
+      z-index: 20;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .person-card.add-bar-open .canvas-add-bar,
+    .person-card.add-bar-open .canvas-card-pencil {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .person-card .canvas-add-bar-inner {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: #0f172a;
+      color: #fff;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      box-shadow: 0 4px 6px -1px rgba(15, 23, 42, 0.2);
+      font-size: 10px;
+      font-weight: 500;
+      line-height: 1.4;
+      white-space: nowrap;
+    }
+    .person-card .canvas-add-bar-inner button {
+      padding: 0 4px;
+      background: transparent;
+      border: none;
+      color: inherit;
+      font: inherit;
+      cursor: pointer;
+    }
+    .person-card .canvas-add-bar-inner button:hover,
+    .person-card .canvas-add-bar-inner button:focus-visible {
+      color: #fcd34d;
+    }
+    .person-card .canvas-add-bar-sep {
+      color: #475569;
+    }
+    @media (hover: hover) {
+      .person-card:hover .canvas-add-bar,
+      .person-card:focus-within .canvas-add-bar {
+        opacity: 1;
+        pointer-events: auto;
+      }
+    }
+    @media (hover: none) {
+      .person-card .canvas-add-bar {
+        opacity: 0;
+        pointer-events: none;
+      }
+      .person-card.selected .canvas-add-bar {
+        opacity: 1;
+        pointer-events: auto;
+      }
+    }
   </style>
 </head>
 <body class="font-sans select-none">
@@ -308,8 +475,8 @@
 
         <!-- View Mode Segmented Control: Tree Canvas vs Accessible Outline -->
         <div id="view-switcher-wrap" data-responsive class="auth-hidden hidden sm:flex shrink-0 items-center bg-parchment-100 p-0.5 rounded-lg border border-parchment-200 text-xs font-medium ml-1">
-          <button id="btn-view-canvas" type="button" aria-pressed="true" class="px-2 py-1 rounded-md bg-white text-archival-indigo shadow-2xs transition">Tree</button>
-          <button id="btn-view-list" type="button" aria-pressed="false" class="px-2 py-1 rounded-md text-slate-600 hover:text-slate-900 transition">Outline</button>
+          <button id="btn-view-canvas" type="button" aria-pressed="true" class="px-2 py-1 rounded-md bg-white text-archival-indigo shadow-2xs transition" data-i18n="tree">Tree</button>
+          <button id="btn-view-list" type="button" aria-pressed="false" class="px-2 py-1 rounded-md text-slate-600 hover:text-slate-900 transition" data-i18n="outline">Outline</button>
         </div>
 
         <!-- Firestore Persistence Status Pill -->
@@ -326,7 +493,7 @@
             <circle cx="11" cy="11" r="8" />
             <path stroke-linecap="round" d="M21 21l-4.35-4.35" />
           </svg>
-          <input id="search-input" type="search" autocomplete="off" spellcheck="false" aria-label="Find a person, place, village, year, or notes" aria-controls="search-results-dropdown" placeholder="Find a person, place, year, or notes..." class="w-full pl-8 pr-3 py-1 text-xs bg-parchment-50 border border-parchment-300 rounded-lg focus:border-archival-indigo focus:bg-white transition" />
+          <input id="search-input" type="search" autocomplete="off" spellcheck="false" aria-label="Find a person, place, village, year, or notes" aria-controls="search-results-dropdown" placeholder="Find a person, place, year, or notes..." data-i18n-placeholder="search" class="w-full pl-8 pr-3 py-1 text-xs bg-parchment-50 border border-parchment-300 rounded-lg focus:border-archival-indigo focus:bg-white transition" />
         </div>
         <div id="search-results-dropdown" role="listbox" aria-label="Search results" class="hidden absolute left-0 right-0 top-9 bg-white border border-parchment-300 rounded-xl shadow-xl py-1 overflow-y-auto z-50"></div>
       </div>
@@ -353,8 +520,9 @@
             <svg class="w-3.5 h-3.5 text-archival-indigo" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
             </svg>
-            <span class="hidden xl:inline">Kinship</span>
+            <span class="hidden xl:inline" data-i18n="kinship">Kinship</span>
           </button>
+          <div id="ui-language-slot" class="hidden sm:flex items-center"></div>
           </div>
 
           <!-- Generations Above/Below Main Person Depth Toggle (1..5+) -->
@@ -372,7 +540,7 @@
               <path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
               <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
             </svg>
-            <span class="hidden xl:inline">Admin</span>
+            <span class="hidden xl:inline" data-i18n="admin">Admin</span>
             <span class="admin-role-dot" aria-hidden="true"></span>
           </a>
           </div>
@@ -418,6 +586,7 @@
       </div>
 
       <div id="header-more-menu" role="menu" aria-label="More actions" class="hidden lg:hidden absolute right-2 top-[52px] w-64 max-w-[calc(100vw-16px)] bg-white border border-parchment-300 rounded-2xl shadow-xl py-1.5 z-50">
+        <div class="px-3 py-2 border-b border-parchment-200 sm:hidden" id="ui-language-slot-menu"></div>
         <div data-menu-sep class="sm:hidden px-3 pt-1 pb-0.5 text-[10.5px] font-bold uppercase tracking-wider text-slate-500">View</div>
         <button type="button" role="menuitemradio" aria-checked="true" data-proxy-for="btn-view-canvas" class="sm:hidden w-full flex items-center gap-2.5 px-3 py-2.5 min-h-[44px] text-left text-sm text-slate-800 hover:bg-parchment-50 focus:bg-parchment-100 disabled:opacity-40">🌳 <span>Tree view</span></button>
         <button type="button" role="menuitemradio" aria-checked="false" data-proxy-for="btn-view-list" class="sm:hidden w-full flex items-center gap-2.5 px-3 py-2.5 min-h-[44px] text-left text-sm text-slate-800 hover:bg-parchment-50 focus:bg-parchment-100 disabled:opacity-40">☰ <span>Outline view</span></button>
@@ -427,8 +596,9 @@
         <button type="button" role="menuitem" data-proxy-for="btn-redo" class="md:hidden w-full flex items-center gap-2.5 px-3 py-2.5 min-h-[44px] text-left text-sm text-slate-800 hover:bg-parchment-50 focus:bg-parchment-100 disabled:opacity-40">↷ <span>Redo</span></button>
         <div data-menu-sep class="px-3 pt-2 pb-0.5 text-[10.5px] font-bold uppercase tracking-wider text-slate-500">Tools</div>
         <button type="button" role="menuitem" data-proxy-for="btn-open-kinship" class="w-full flex items-center gap-2.5 px-3 py-2.5 min-h-[44px] text-left text-sm text-slate-800 hover:bg-parchment-50 focus:bg-parchment-100 disabled:opacity-40">🔗 <span>Kinship finder</span></button>
+                <button type="button" role="menuitem" id="btn-merge-duplicates-menu" class="w-full flex items-center gap-2.5 px-3 py-2.5 min-h-[44px] text-left text-sm text-slate-800 hover:bg-parchment-50 focus:bg-parchment-100 disabled:opacity-40">⧉ <span data-i18n="mergePeople">Merge duplicate people</span></button>
                 <div data-menu-sep class="px-3 pt-2 pb-0.5 text-[10.5px] font-bold uppercase tracking-wider text-slate-500">Export</div>
-        <button type="button" role="menuitem" id="btn-print-tree-menu" class="w-full flex items-center gap-2.5 px-3 py-2.5 min-h-[44px] text-left text-sm text-slate-800 hover:bg-parchment-50 focus:bg-parchment-100">🖨 <span>Print / Save as PDF</span></button>
+        <button type="button" role="menuitem" id="btn-print-tree-menu" class="w-full flex items-center gap-2.5 px-3 py-2.5 min-h-[44px] text-left text-sm text-slate-800 hover:bg-parchment-50 focus:bg-parchment-100">🖨 <span data-i18n="printPdf">Print / Save as PDF</span></button>
         <button type="button" role="menuitem" data-proxy-for="link-admin-panel" title="Admin panel" class="w-full flex items-center gap-2.5 px-3 py-2.5 min-h-[44px] text-left text-sm text-slate-700 hover:bg-parchment-50 focus:bg-parchment-100 disabled:opacity-40">⚙ <span>Admin</span></button>
       </div>
     </header>
@@ -535,22 +705,27 @@
             <button id="btn-zoom-reset" type="button" title="Reset Zoom to 100%" aria-label="Reset zoom" class="px-2 py-1 rounded-lg hover:bg-parchment-100 font-mono text-[11px] min-w-[44px] transition">100%</button>
             <button id="btn-zoom-in" type="button" title="Zoom In" aria-label="Zoom in" class="px-2 py-1 rounded-lg hover:bg-parchment-100 transition">+</button>
             <div class="w-px h-4 bg-parchment-300 mx-0.5"></div>
-            <button id="btn-fit-screen" type="button" title="Fit All Generations to Screen" class="px-2.5 py-1 rounded-lg hover:bg-parchment-100 text-archival-indigo font-semibold transition">Fit</button>
+            <button id="btn-fit-screen" type="button" title="Fit All Generations to Screen" class="px-2.5 py-1 rounded-lg hover:bg-parchment-100 text-archival-indigo font-semibold transition" data-i18n="fit">Fit</button>
             <div class="w-px h-4 bg-parchment-300 mx-0.5"></div>
             <button id="btn-toggle-full-tree" type="button" aria-pressed="false" title="Show every branch of the family tree" class="flex items-center gap-1 px-2.5 py-1.5 min-h-[32px] rounded-lg bg-archival-indigo/10 hover:bg-archival-indigo/20 text-archival-indigo font-semibold transition">
               <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
               <span id="lbl-toggle-full-tree">Show full tree</span>
             </button>
             <div class="w-px h-4 bg-parchment-300 mx-0.5 no-print" data-no-print></div>
-            <button id="btn-print-tree" type="button" title="Print or save this tree as a PDF" aria-label="Print or save as PDF" class="no-print px-2.5 py-1 rounded-lg hover:bg-parchment-100 text-archival-indigo font-semibold transition">Print</button>
+            <button id="btn-print-tree" type="button" title="Print or save this tree as a PDF" aria-label="Print or save as PDF" class="no-print px-2.5 py-1 rounded-lg hover:bg-parchment-100 text-archival-indigo font-semibold transition" data-i18n="print">Print</button>
           </div>
         </div>
 
         <!-- Bottom-Right Legend Pill -->
-        <div id="canvas-legend-pill" class="auth-hidden hidden md:flex absolute bottom-3 right-3 items-center gap-3 bg-white/95 backdrop-blur-xs border border-parchment-300 rounded-xl px-3 py-1.5 text-[11px] text-slate-600 shadow-2xs z-10 pointer-events-none">
+        <div id="canvas-legend-pill" class="auth-hidden hidden md:flex flex-wrap absolute bottom-3 right-3 items-center gap-x-3 gap-y-1 bg-white/95 backdrop-blur-xs border border-parchment-300 rounded-xl px-3 py-1.5 text-[11px] text-slate-600 shadow-2xs z-10 pointer-events-none" style="max-width:min(36rem,calc(100vw - 8rem));">
           <span class="flex items-center gap-1.5"><span class="inline-flex gap-0.5"><span class="w-2 h-1 rounded-xs bg-slate-400"></span><span class="w-2 h-1 rounded-xs bg-slate-400"></span></span> Branch tab (open / close)</span>
           <span class="flex items-center gap-1.5"><span class="w-3.5 h-0.5 bg-slate-600 inline-block"></span> Biological</span>
           <span class="flex items-center gap-1.5"><span class="w-3.5 h-0.5 border-t-2 border-dashed border-sky-600 inline-block"></span> Adoptive / Step</span>
+          <span class="flex items-center gap-1.5"><span class="w-3.5 h-0.5 border-t-2 border-dashed border-teal-700 inline-block"></span> Foster / Guardian</span>
+          <span class="flex items-center gap-1.5" title="Married union"><span style="display:inline-block;width:14px;border-top:2px solid #94A3B8;"></span> Married</span>
+          <span class="flex items-center gap-1.5" title="Divorced union"><span style="display:inline-block;width:14px;border-top:2px dashed #DC2626;"></span> Divorced</span>
+          <span class="flex items-center gap-1.5" title="Separated union"><span style="display:inline-block;width:14px;border-top:2px dotted #D97706;"></span> Separated</span>
+          <span class="flex items-center gap-1.5" title="Widowed union"><span style="display:inline-block;width:14px;border-top:2px solid #6B7280;"></span> Widowed</span>
         </div>
 
         <!-- Floating Generations Above/Below Main Person Slider Popover -->
@@ -779,9 +954,123 @@
   </div>
 
   <!-- Toast Notification Banner -->
-  <div id="toast-banner" role="status" aria-live="polite" class="hidden fixed bottom-14 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-xs font-medium px-4 py-2 rounded-full shadow-lg z-50"></div>
+  <div id="toast-banner" role="status" aria-live="polite" class="hidden fixed bottom-14 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-xs font-medium px-4 py-2 rounded-full shadow-lg z-50 max-w-[calc(100vw-24px)]"></div>
+
+<input id="input-photo-camera" type="file" accept="image/*" capture="environment" class="hidden no-print" aria-hidden="true" />
+<input id="input-photo-gallery" type="file" accept="image/*" class="hidden no-print" aria-hidden="true" />
+
+<div id="merge-duplicates-modal" class="hidden fixed inset-0 z-[200] flex items-center justify-center p-4 no-print" role="dialog" aria-modal="true" aria-labelledby="merge-dup-title">
+  <div id="merge-dup-backdrop" class="absolute inset-0 bg-slate-900/50 backdrop-blur-xs"></div>
+  <div class="relative bg-white border border-parchment-300 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[92vh] overflow-hidden flex flex-col">
+    <div class="px-4 sm:px-5 pt-4 pb-3 border-b border-parchment-200">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <h2 id="merge-dup-title" class="font-serif text-lg font-semibold text-slate-900">Merge duplicate people</h2>
+          <p id="merge-dup-status" class="text-xs text-slate-600 mt-1">Likely duplicates are matched by name, dates, and shared parents.</p>
+        </div>
+        <button type="button" id="merge-dup-cancel" class="shrink-0 px-2 py-1 text-slate-500 hover:text-slate-800 text-lg leading-none" aria-label="Close">×</button>
+      </div>
+    </div>
+    <div class="px-4 sm:px-5 py-3 overflow-y-auto space-y-3" style="min-height: 12rem;">
+      <div id="merge-dup-list" class="space-y-2"></div>
+      <div id="merge-dup-compare" class="hidden space-y-3"></div>
+    </div>
+  </div>
+</div>
 
 
+<div id="modal-quick-edit" class="hidden fixed inset-0 z-50 flex items-center justify-center p-3 no-print" role="dialog" aria-modal="true" aria-labelledby="qe-title" style="z-index:80;">
+  <div class="absolute inset-0 bg-slate-900/50" data-qe-cancel></div>
+  <div class="relative w-full bg-white border border-stone-200 rounded-2xl shadow-2xl flex flex-col overflow-hidden" style="width:min(42rem,calc(100vw - 24px));max-height:min(92vh,calc(100vh - 24px));">
+    <div id="qe-lock-slot"></div>
+    <div class="flex items-start gap-3 px-4 py-3 border-b border-stone-200 shrink-0">
+      <div id="qe-avatar-wrap" class="w-16 h-16 rounded-full border-2 border-slate-300 bg-slate-100 flex items-center justify-center overflow-hidden shrink-0">
+        <img id="qe-avatar-img" alt="" class="w-full h-full object-cover hidden">
+        <div id="qe-avatar-svg" class="w-10 h-10 text-slate-400"></div>
+      </div>
+      <div class="min-w-0 flex-1 pt-0.5">
+        <h2 id="qe-title" class="font-serif text-lg font-semibold text-slate-900 leading-tight">Edit profile</h2>
+        <p id="qe-name-heading" class="text-sm text-slate-600 truncate"></p>
+      </div>
+      <button type="button" id="btn-qe-close" class="shrink-0 px-2 py-1 text-slate-500 hover:text-slate-800 text-lg leading-none" aria-label="Close">×</button>
+    </div>
+    <form id="form-quick-edit" class="flex flex-col min-h-0 flex-1">
+      <div class="px-4 py-3 overflow-y-auto space-y-4 flex-1">
+        <fieldset class="space-y-1">
+          <legend class="text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">Sex</legend>
+          <div class="flex flex-wrap gap-3 text-xs text-slate-800">
+            <label class="inline-flex items-center gap-1.5"><input type="radio" name="qeSex" value="M" class="accent-archival-indigo"> Male</label>
+            <label class="inline-flex items-center gap-1.5"><input type="radio" name="qeSex" value="F" class="accent-archival-indigo"> Female</label>
+            <label class="inline-flex items-center gap-1.5"><input type="radio" name="qeSex" value="U" class="accent-archival-indigo"> Unknown</label>
+          </div>
+        </fieldset>
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="block text-[11px] font-medium text-slate-600 mb-1" for="qe-given">First (and middle) name</label>
+            <input id="qe-given" name="qeGiven" type="text" autocomplete="off" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
+          </div>
+          <div>
+            <label class="block text-[11px] font-medium text-slate-600 mb-1" for="qe-surname">Last name</label>
+            <input id="qe-surname" name="qeSurname" type="text" autocomplete="off" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="block text-[11px] font-medium text-slate-600 mb-1" for="qe-prefix">Prefix</label>
+            <select id="qe-prefix" name="qePrefix" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg"></select>
+          </div>
+          <div>
+            <label class="block text-[11px] font-medium text-slate-600 mb-1" for="qe-suffix">Suffix</label>
+            <select id="qe-suffix" name="qeSuffix" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg"></select>
+          </div>
+        </div>
+        <div>
+          <label class="block text-[11px] font-medium text-slate-600 mb-1" for="qe-alt">Maiden / birth surname</label>
+          <input id="qe-alt" name="qeAltName" type="text" autocomplete="off" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
+        </div>
+        <div class="space-y-1.5">
+          <div class="text-[11px] font-medium text-slate-600">Birth</div>
+          <div id="qe-birth-date"></div>
+          <label class="block text-[11px] font-medium text-slate-600 mb-1" for="qe-birth-place">Birth place</label>
+          <input id="qe-birth-place" name="qeBirthPlace" type="text" autocomplete="off" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
+          <input type="hidden" name="qeBirthDate" id="qe-birth-date-hidden" value="">
+        </div>
+        <fieldset class="space-y-1">
+          <legend class="text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">Status</legend>
+          <div class="flex flex-wrap gap-3 text-xs text-slate-800">
+            <label class="inline-flex items-center gap-1.5"><input type="radio" name="qeLiving" value="living" class="accent-archival-indigo"> Living</label>
+            <label class="inline-flex items-center gap-1.5"><input type="radio" name="qeLiving" value="deceased" class="accent-archival-indigo"> Deceased</label>
+          </div>
+        </fieldset>
+        <div id="qe-living-fields" class="space-y-1.5">
+          <label class="block text-[11px] font-medium text-slate-600 mb-1" for="qe-email">Email</label>
+          <div class="flex items-center gap-2" style="display:flex;align-items:center;gap:0.5rem;">
+            <input id="qe-email" name="qeEmail" type="email" autocomplete="off" placeholder="relative@example.com" class="px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg" style="flex:1 1 0;min-width:0;">
+            <button type="button" id="btn-qe-invite" class="px-2.5 py-1.5 rounded-lg border border-stone-300 text-xs font-semibold text-slate-700 bg-white" style="flex:0 0 auto;">Invite to join site</button>
+          </div>
+          <p class="text-[10px] text-slate-500 leading-relaxed">Saves the address on this person and opens a mail draft. Email is not sent automatically.</p>
+        </div>
+        <div id="qe-death-fields" class="hidden space-y-2">
+          <div class="text-[11px] font-medium text-slate-600">Death</div>
+          <div id="qe-death-date"></div>
+          <label class="block text-[11px] font-medium text-slate-600 mb-1" for="qe-death-place">Death place</label>
+          <input id="qe-death-place" name="qeDeathPlace" type="text" autocomplete="off" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
+          <label class="block text-[11px] font-medium text-slate-600 mb-1" for="qe-death-cause">Cause of death</label>
+          <input id="qe-death-cause" name="qeDeathCause" type="text" autocomplete="off" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
+          <label class="block text-[11px] font-medium text-slate-600 mb-1" for="qe-burial-place">Burial place</label>
+          <input id="qe-burial-place" name="qeBurialPlace" type="text" autocomplete="off" class="w-full px-2.5 py-1.5 text-xs bg-white border border-stone-300 rounded-lg">
+        </div>
+        <div id="qe-parents" class="space-y-3"></div>
+        <div id="qe-spouses" class="space-y-3"></div>
+      </div>
+      <div class="flex flex-wrap items-center justify-end gap-2 px-4 py-3 border-t border-stone-200 shrink-0 bg-stone-50">
+        <button type="button" id="btn-qe-more" class="mr-auto px-3 py-1.5 text-xs font-semibold text-archival-indigo hover:underline">Edit more</button>
+        <button type="button" id="btn-qe-cancel" class="px-3 py-1.5 rounded-lg border border-stone-300 text-xs font-semibold text-slate-700 bg-white" data-qe-cancel>Cancel</button>
+        <button type="submit" id="btn-qe-ok" class="px-3 py-1.5 rounded-lg bg-archival-indigo hover:bg-archival-indigoHover text-white text-xs font-semibold">OK</button>
+      </div>
+    </form>
+  </div>
+</div>
 
 <div id="print-tree-modal" class="hidden fixed inset-0 z-[200] flex items-center justify-center p-4 no-print" role="dialog" aria-modal="true" aria-labelledby="print-tree-title">
       <div class="absolute inset-0 bg-slate-900/40" data-print-cancel></div>

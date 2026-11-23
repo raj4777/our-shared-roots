@@ -2003,6 +2003,12 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       });
     }
 
+    function normalizeUnionStatus(status) {
+      const st = String(status || '').trim().toLowerCase();
+      if (st === 'divorced' || st === 'separated' || st === 'widowed') return st;
+      return 'married';
+    }
+
     function serializeArchiveToGedcom(version = '7.0', redactLiving = false) {
       const is7 = version !== '5.5.1';
       const lines = ['0 HEAD', '1 GEDC', `2 VERS ${is7 ? '7.0' : '5.5.1'}`];
@@ -2089,7 +2095,18 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           if (f.marriageDate) lines.push(`2 DATE ${gedValue(f.marriageDate)}`);
           if (f.marriagePlace) lines.push(`2 PLAC ${gedValue(f.marriagePlace)}`);
         }
-        if (f.status === 'divorced') lines.push('1 DIV Y');
+        const ustatus = normalizeUnionStatus(f.status);
+        if (ustatus === 'divorced') {
+          lines.push('1 DIV Y');
+          if (f.divorceDate) lines.push(`2 DATE ${gedValue(f.divorceDate)}`);
+          if (f.divorcePlace) lines.push(`2 PLAC ${gedValue(f.divorcePlace)}`);
+        } else if (ustatus === 'separated') {
+          lines.push('1 _SEPR Y');
+          if (f.divorceDate) lines.push(`2 DATE ${gedValue(f.divorceDate)}`);
+          if (f.divorcePlace) lines.push(`2 PLAC ${gedValue(f.divorcePlace)}`);
+        } else if (ustatus === 'widowed') {
+          lines.push('1 _WIDO Y');
+        }
         const seen = new Set();
         (f.children || []).forEach(ch => {
           if (!ch || !personXref[ch.personId] || seen.has(ch.personId)) return;
@@ -2177,6 +2194,8 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
               chilPedigreeMap: {},
               marriageDate: '',
               marriagePlace: '',
+              divorceDate: '',
+              divorcePlace: '',
               status: 'married'
             };
             famRecords[xref] = currentRec;
@@ -2285,11 +2304,20 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
               currentSub = { chilXref: cx };
             } else if (tag === 'DIV') {
               currentRec.status = 'divorced';
+              const rest = String(val || '').trim();
+              if (rest && rest.toUpperCase() !== 'Y') currentRec.divorceDate = rest;
+            } else if (tag === '_SEPR') {
+              currentRec.status = 'separated';
+            } else if (tag === '_WIDO') {
+              currentRec.status = 'widowed';
             }
           } else if (level === 2 && currentSub) {
             if (currentSub === 'MARR') {
               if (tag === 'DATE') currentRec.marriageDate = val;
               if (tag === 'PLAC') currentRec.marriagePlace = val;
+            } else if (currentSub === 'DIV' || currentSub === '_SEPR' || currentSub === '_WIDO') {
+              if (tag === 'DATE') currentRec.divorceDate = val;
+              if (tag === 'PLAC') currentRec.divorcePlace = val;
             } else if (typeof currentSub === 'object' && currentSub.chilXref) {
               if (tag === 'PEDI' || tag === '_FREL' || tag === '_MREL') {
                 const normPed = val.toLowerCase();
@@ -2318,6 +2346,8 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
               chilPedigreeMap: {},
               marriageDate: '',
               marriagePlace: '',
+              divorceDate: '',
+              divorcePlace: '',
               status: 'married'
             };
             famRecords[fx] = fam;
@@ -2346,6 +2376,8 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
               chilPedigreeMap: {},
               marriageDate: '',
               marriagePlace: '',
+              divorceDate: '',
+              divorcePlace: '',
               status: 'married'
             };
             famRecords[fx] = fam;
@@ -2409,7 +2441,9 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           partner2Id: p2,
           marriageDate: fam.marriageDate,
           marriagePlace: fam.marriagePlace,
-          status: fam.status,
+          divorceDate: fam.divorceDate || '',
+          divorcePlace: fam.divorcePlace || '',
+          status: normalizeUnionStatus(fam.status),
           children
         };
 
@@ -3747,6 +3781,8 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         personHasDeathEvent,
         DEFAULT_LIVING_STATUS,
         parseGedcomArchiveText,
+        serializeArchiveToGedcom,
+        normalizeUnionStatus,
         applyLoadedDocuments,
         formatError: formatFirestoreError,
         recordAppError,

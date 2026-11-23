@@ -28,3 +28,6 @@ test/private/
 payloadJson*.json
 changeLog*.json
 osr-real-deploy/
+
+# Test screenshots — do not commit
+screenshots/
