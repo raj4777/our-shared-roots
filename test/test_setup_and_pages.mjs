@@ -106,6 +106,7 @@ assert(rules.includes("return 'owner@example.com';"), 'rules embed the Super Adm
 assert((rules.match(/'owner@example\.com'/g) || []).length === 1, 'Super Admin email appears exactly once as a rules string');
 assert(rules.includes('function revisionAdvances()') && rules.includes('adminEmails'), 'rules include the revision guard and adminEmails');
 assert(rules.includes('match /archives/familytree {') && rules.includes('match /archives/familytree_log {'), 'rules use the chosen archive IDs');
+assert(rules.includes('match /archives/familytree_guest {') && rules.includes('match /shareLinks/{token}'), 'rules include the guest view and share-link documents');
 assert(!rules.includes('__SUPER_ADMIN_EMAIL__') && !rules.includes('__ARCHIVE_ID__'), 'no unfilled placeholders in rules');
 
 const fb = JSON.parse(fs.readFileSync(path.join(OUT, 'firebase.json'), 'utf8'));

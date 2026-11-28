@@ -2,6 +2,7 @@ window.FIREBASE_CONFIG = window.FIREBASE_CONFIG || null;
 
 import { applyHostingAuthDomain } from './firebase-config.js';
 import { computeAccessListsFromPermissions, frozenAccessListsFromMainDoc, reconcilePermissionsWithMainDoc, describeAclReport, nextArchiveRevision } from './acl-core.js';
+import { createShareStore, generateShareToken, buildShareUrl, buildGuestDocFields, applySuggestionToState, suggestionFieldLabel, currentValueForField } from './share-core.js';
 import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendChangeLogEntry, applyDomainDiffToSnap, clearAppErrorLog, compactChangeLogEvents, computeDomainDiff, deepClone, describeLogStorage, describeMainStorage, downloadAppErrorLog, entryIsRevertible, escapeHtml, extractEmbeddedLog, findRevertConflictsFromDiff, formatFirestoreError, formatStorageKb, generateId, getArchiveDocPath, getArchiveId, getArchiveLogDocPath, getArchiveLogId, getEntryDiff, getOsConfig, hasLegacySnapshots, hasUsableDiff, isOwnEchoSnapshot, jsonFitsInDoc, loadAppErrorLog, logStateFromLogDoc, mergeLogStates, miniSnapFromDiff, openFirestoreDatabase, paintStorageRow, reconstructStateBeforeEntry, recordAppError, rememberOwnStamp, reservedSizeForFields, trimChangeLogToFit, utf8ByteLength, writeArchiveAndLog } from './save-core.js';
 
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -28,6 +29,16 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       setDoc,
       onSnapshot,
       runTransaction,
+      deleteDoc,
+      updateDoc,
+      writeBatch,
+      collection,
+      addDoc,
+      getDocs,
+      query,
+      orderBy,
+      limit,
+      serverTimestamp,
     } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
     configureSaveCore({ getDb: () => db, getFirebaseUser: () => firebaseUser });
@@ -201,7 +212,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     let changeLogFilter = 'all';
     let changeLogPage = 1;
     const CHANGE_LOG_PAGE_SIZE = 15;
-    const ADMIN_TABS = ['overview', 'people', 'changelog', 'data', 'settings'];
+    const ADMIN_TABS = ['overview', 'people', 'changelog', 'data', 'sharing', 'settings'];
     let activeAdminTab = 'overview';
     let pendingAdminGedcomParsed = null;
 
@@ -1003,6 +1014,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           try { syncChannel.postMessage({ type: 'FIRESTORE_COMMITTED' }); } catch (e) {}
         }
         hooks.onSaved();
+        scheduleGuestViewRefresh();
         return { ok: true };
       } catch (err) {
         hooks.onError(err);
@@ -2580,6 +2592,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     function setAdminTab(tab, { updateHash = true } = {}) {
       const next = ADMIN_TABS.includes(tab) ? tab : 'overview';
       activeAdminTab = next;
+      if (next === 'sharing') setTimeout(() => { refreshSharingTab(); }, 0);
       document.querySelectorAll('[data-admin-tab]').forEach(panel => {
         panel.classList.toggle('hidden-tab', panel.getAttribute('data-admin-tab') !== next);
       });
@@ -2644,7 +2657,14 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
 
     function renderAdmin() {
       try { applyConfigToDom(); } catch (e) {}
-
+      try {
+        renderShareLinkCard();
+        renderSuggestions();
+        if (isAdminAuthorized() && activeAdminTab === 'sharing' && sharingLoadedFor !== getActiveAdminEmail()) {
+          sharingLoadedFor = getActiveAdminEmail();
+          setTimeout(() => { refreshSharingTab(); }, 0);
+        }
+      } catch (e) { console.warn('Sharing tab paint skipped:', e); }
 
       const authorized = isAdminAuthorized();
       const manageAccess = canManageAccess();
@@ -3707,6 +3727,239 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     initAccessibleModals(['modal-review-change', 'modal-admin-gedcom', 'modal-admin-confirm']);
     renderAdmin();
     // Named (not only on the test hook) so runMarkLivingMutation works in production builds.
+    /* Share link (Super Admin) and suggestions review (Admins) — src/share-core.js */
+    let shareStore = createShareStore(() => db, { doc, getDoc, setDoc, deleteDoc, updateDoc, writeBatch, collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp }, { treeId: getArchiveId });
+    let shareConfigCache;            // undefined = not loaded, null = no link yet
+    let suggestionsCache = [];
+    let sharingLoadedFor = '';
+    let sharingBusy = false;
+
+    function canManageShareLink() {
+      return isAdminAuthorized() && canManageAccess();
+    }
+    function currentShareUrl() {
+      return shareConfigCache && shareConfigCache.token ? buildShareUrl(location.href, shareConfigCache.token) : '';
+    }
+    function setShareStatus(text) {
+      const el = document.getElementById('share-link-status');
+      if (el) el.textContent = text || '';
+    }
+    function renderShareLinkCard() {
+      const card = document.getElementById('share-link-card');
+      if (!card) return;
+      const allowed = canManageShareLink();
+      card.classList.toggle('hidden', !allowed);
+      if (!allowed) return;
+      const cfg = shareConfigCache;
+      const has = Boolean(cfg && cfg.token);
+      document.getElementById('share-link-empty').classList.toggle('hidden', has || cfg === undefined);
+      document.getElementById('share-link-present').classList.toggle('hidden', !has);
+      const toggle = document.getElementById('share-link-active');
+      toggle.disabled = !has || sharingBusy;
+      toggle.checked = Boolean(has && cfg.active);
+      document.getElementById('share-link-active-label').textContent = has && cfg.active ? 'On' : 'Off';
+      document.getElementById('share-link-url').value = has ? currentShareUrl() : '';
+      ['btn-share-copy', 'btn-share-regenerate', 'btn-share-refresh', 'btn-share-create'].forEach(id => {
+        const b = document.getElementById(id);
+        if (b) b.disabled = sharingBusy;
+      });
+      if (has && !document.getElementById('share-link-status').textContent) {
+        setShareStatus(cfg.active ? 'The link is on. Visitors see the guest view.' : 'The link is off. Visitors see “This share link is not available”.');
+      }
+    }
+    async function refreshSharingTab() {
+      const email = getActiveAdminEmail();
+      if (canManageShareLink()) {
+        try { shareConfigCache = await shareStore.loadConfig(); }
+        catch (err) { shareConfigCache = undefined; setShareStatus('Could not load the share link: ' + (formatFirestoreError(err).text || err?.code)); }
+      }
+      renderShareLinkCard();
+      if (isAdminAuthorized()) {
+        try { suggestionsCache = await shareStore.listSuggestions(); }
+        catch (err) { suggestionsCache = []; showToast('Could not load suggestions: ' + (formatFirestoreError(err).text || err?.code)); }
+      }
+      sharingLoadedFor = email;
+      renderSuggestions();
+    }
+    function guestMeta() {
+      return { updatedAt: new Date().toISOString(), updatedByEmail: getActiveAdminEmail(), updatedByUid: (firebaseUser && firebaseUser.uid) || '' };
+    }
+    async function publishGuestViewNow() {
+      const fields = buildGuestDocFields(appState, guestMeta());
+      await shareStore.publishGuestView(fields);
+      return fields;
+    }
+    let guestRefreshTimer = null;
+    function scheduleGuestViewRefresh(delayMs = 3000) {
+      if (!isAdminAuthorized()) return;
+      clearTimeout(guestRefreshTimer);
+      guestRefreshTimer = setTimeout(async () => {
+        try { if (await shareStore.guestViewExists()) await publishGuestViewNow(); }
+        catch (err) { console.warn('Guest view refresh skipped:', err?.code || err); }
+      }, delayMs);
+    }
+    async function withSharingBusy(fn) {
+      if (sharingBusy) return null;
+      sharingBusy = true; renderShareLinkCard();
+      try { return await fn(); }
+      catch (err) { setShareStatus('That did not work: ' + (formatFirestoreError(err).text || err?.message || err?.code)); showToast('Share link change failed.'); return null; }
+      finally { sharingBusy = false; renderShareLinkCard(); }
+    }
+    function createShareLink() {
+      if (!canManageShareLink()) return null;
+      return withSharingBusy(async () => {
+        const token = generateShareToken();
+        await shareStore.rotate({ newToken: token, oldToken: null, active: true, uid: firebaseUser.uid });
+        shareConfigCache = { token, active: true };
+        await publishGuestViewNow();
+        setShareStatus('Share link created and turned on. The guest view was published.');
+        showToast('Share link created.');
+        return token;
+      });
+    }
+    function regenerateShareLink() {
+      if (!canManageShareLink() || !shareConfigCache?.token) return null;
+      return withSharingBusy(async () => {
+        const oldToken = shareConfigCache.token;
+        const token = generateShareToken();
+        await shareStore.rotate({ newToken: token, oldToken, active: Boolean(shareConfigCache.active), uid: firebaseUser.uid });
+        shareConfigCache = { token, active: Boolean(shareConfigCache.active) };
+        setShareStatus('New link created. The old link stopped working immediately; send the new one to the family.');
+        showToast('Share link regenerated. The old link no longer works.');
+        return token;
+      });
+    }
+    function promptRegenerateShareLink() {
+      openConfirmActionModal({
+        title: 'Regenerate the share link?',
+        description: 'The current link stops working immediately for everyone who has it, including anyone viewing it right now. You will need to send the new link again.',
+        confirmLabel: 'Regenerate link',
+        onConfirm: () => { regenerateShareLink(); }
+      });
+    }
+    function setShareLinkActive(active) {
+      if (!canManageShareLink() || !shareConfigCache?.token) return null;
+      return withSharingBusy(async () => {
+        await shareStore.setActive({ token: shareConfigCache.token, active, uid: firebaseUser.uid });
+        shareConfigCache = { ...shareConfigCache, active: Boolean(active) };
+        if (active) await publishGuestViewNow();
+        setShareStatus(active ? 'The link is on. Visitors see the guest view.' : 'The link is off. Nobody can open the guest view with it until you turn it back on.');
+        showToast(active ? 'Share link turned on.' : 'Share link turned off.');
+        return true;
+      });
+    }
+    function refreshGuestViewFromButton() {
+      if (!canManageShareLink()) return null;
+      return withSharingBusy(async () => {
+        await publishGuestViewNow();
+        setShareStatus('Guest view refreshed from the current tree (' + new Date().toLocaleString() + ').');
+        showToast('Guest view refreshed.');
+        return true;
+      });
+    }
+
+    function formatSuggestionDate(ts) {
+      try {
+        const d = ts && typeof ts.toDate === 'function' ? ts.toDate() : (ts ? new Date(ts) : null);
+        return d && !isNaN(d) ? d.toLocaleString() : '';
+      } catch (e) { return ''; }
+    }
+    function renderSuggestions() {
+      const card = document.getElementById('suggestions-card');
+      if (!card) return;
+      const allowed = isAdminAuthorized();
+      card.classList.toggle('hidden', !allowed);
+      if (!allowed) return;
+      const filter = document.getElementById('suggestions-filter')?.value || 'pending';
+      const items = suggestionsCache.filter(sug => filter === 'all' || sug.status === 'pending');
+      document.getElementById('suggestions-pending-count').textContent = String(suggestionsCache.filter(sug => sug.status === 'pending').length);
+      document.getElementById('suggestions-empty').classList.toggle('hidden', items.length > 0);
+      const list = document.getElementById('suggestions-list');
+      list.innerHTML = items.map(sug => {
+        const person = appState.persons[sug.personId];
+        const name = person ? getPersonName(person) : '(no longer in the tree)';
+        const nowVal = person ? currentValueForField(person, sug.field) : '';
+        const pill = sug.status === 'approved' ? 'bg-emerald-100 text-emerald-900' : sug.status === 'rejected' ? 'bg-slate-200 text-slate-700' : 'bg-amber-100 text-amber-900';
+        const reviewed = sug.status !== 'pending' && sug.reviewedByEmail ? `<p class="text-[11px] text-slate-500">${escapeHtml(sug.status === 'approved' ? 'Approved' : 'Rejected')} by ${escapeHtml(sug.reviewedByEmail)}${sug.reviewedAt ? ' · ' + escapeHtml(formatSuggestionDate(sug.reviewedAt)) : ''}</p>` : '';
+        const actions = sug.status === 'pending' ? `<div class="flex gap-2 pt-1">
+            <button type="button" data-suggestion-approve="${escapeHtml(sug.id)}" class="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold" ${person ? '' : 'disabled'}>${sug.field === 'other' ? 'Mark done' : 'Approve'}</button>
+            <button type="button" data-suggestion-reject="${escapeHtml(sug.id)}" class="px-3 py-1.5 rounded-lg border border-parchment-300 text-slate-700 hover:bg-parchment-100 text-xs font-semibold">Reject</button>
+          </div>` : '';
+        return `<article class="suggestion-item p-3 rounded-xl border border-parchment-200 bg-parchment-50/60 space-y-1 text-xs" data-suggestion-id="${escapeHtml(sug.id)}">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <p class="font-semibold text-slate-900">${escapeHtml(name)} · <span class="font-medium text-slate-700">${escapeHtml(suggestionFieldLabel(sug.field))}</span></p>
+            <span class="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${pill}">${escapeHtml(sug.status || 'pending')}</span>
+          </div>
+          ${sug.field === 'other' ? '' : `<p class="text-slate-700">In the tree now: <span class="font-medium">${escapeHtml(nowVal || '—')}</span></p>`}
+          <p class="text-slate-900">${sug.field === 'other' ? 'Request' : 'Suggested'}: <strong>${escapeHtml(sug.newValue || '')}</strong></p>
+          ${sug.note ? `<p class="text-slate-600 italic">“${escapeHtml(sug.note)}”</p>` : ''}
+          <p class="text-[11px] text-slate-500">From ${escapeHtml(sug.email || '')}${sug.createdAt ? ' · ' + escapeHtml(formatSuggestionDate(sug.createdAt)) : ''}</p>
+          ${reviewed}
+          ${actions}
+        </article>`;
+      }).join('');
+    }
+    async function approveSuggestion(id) {
+      const sug = suggestionsCache.find(x => x.id === id);
+      if (!sug || sug.status !== 'pending' || !isAdminAuthorized()) return { ok: false };
+      const person = appState.persons[sug.personId];
+      if (!person) { showToast('That person is no longer in the tree.'); return { ok: false }; }
+      if (sug.field !== 'other') {
+        const label = suggestionFieldLabel(sug.field);
+        const write = commitMutation(
+          `Approved suggestion from ${sug.email}: ${label} of ${getPersonName(person)} → ${sug.newValue}`,
+          (st) => {
+            const r = applySuggestionToState(st, sug, { idFactory: generateId });
+            if (!r.ok) throw new Error(r.error || 'not applied');
+          },
+          'Suggestions'
+        );
+        if (!write) return { ok: false };
+        const result = await write;
+        if (!result || result.ok === false) { showToast('The tree was not saved, so the suggestion is still pending.'); return { ok: false, result }; }
+      }
+      try {
+        await shareStore.reviewSuggestion(id, { status: 'approved', email: getActiveAdminEmail(), uid: firebaseUser.uid, reviewNote: sug.field === 'other' ? 'Marked done; no automatic change.' : '' });
+      } catch (err) {
+        showToast('The change was applied, but marking the suggestion approved failed: ' + (formatFirestoreError(err).text || err?.code));
+        return { ok: false, error: err };
+      }
+      Object.assign(sug, { status: 'approved', reviewedByEmail: getActiveAdminEmail(), reviewedAt: new Date() });
+      renderSuggestions();
+      showToast(sug.field === 'other' ? 'Suggestion marked done.' : 'Suggestion approved and applied to the tree.');
+      return { ok: true };
+    }
+    async function rejectSuggestion(id) {
+      const sug = suggestionsCache.find(x => x.id === id);
+      if (!sug || sug.status !== 'pending' || !isAdminAuthorized()) return { ok: false };
+      try {
+        await shareStore.reviewSuggestion(id, { status: 'rejected', email: getActiveAdminEmail(), uid: firebaseUser.uid });
+      } catch (err) {
+        showToast('Could not reject: ' + (formatFirestoreError(err).text || err?.code));
+        return { ok: false, error: err };
+      }
+      Object.assign(sug, { status: 'rejected', reviewedByEmail: getActiveAdminEmail(), reviewedAt: new Date() });
+      renderSuggestions();
+      showToast('Suggestion rejected. The tree was not changed.');
+      return { ok: true };
+    }
+    function bindSharingUi() {
+      document.getElementById('btn-share-create')?.addEventListener('click', () => createShareLink());
+      document.getElementById('btn-share-copy')?.addEventListener('click', () => { const u = currentShareUrl(); if (u) copyTextSafe(u, 'Share link copied.'); });
+      document.getElementById('btn-share-regenerate')?.addEventListener('click', () => promptRegenerateShareLink());
+      document.getElementById('btn-share-refresh')?.addEventListener('click', () => refreshGuestViewFromButton());
+      document.getElementById('share-link-active')?.addEventListener('change', (e) => { setShareLinkActive(Boolean(e.target.checked)); });
+      document.getElementById('btn-suggestions-reload')?.addEventListener('click', () => refreshSharingTab());
+      document.getElementById('suggestions-filter')?.addEventListener('change', () => renderSuggestions());
+      document.getElementById('suggestions-list')?.addEventListener('click', (e) => {
+        const a = e.target.closest('[data-suggestion-approve]');
+        if (a && !a.disabled) { approveSuggestion(a.getAttribute('data-suggestion-approve')); return; }
+        const r = e.target.closest('[data-suggestion-reject]');
+        if (r) rejectSuggestion(r.getAttribute('data-suggestion-reject'));
+      });
+    }
+    bindSharingUi();
+
     function commitMutation(summary, mutatorFn, category = 'Tree Data') {
       const beforeSnap = captureDomainSnapshot(appState);
       mutatorFn(appState);
@@ -3777,6 +4030,17 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           return { events: (appState.changeEvents || []).length, pending: pendingLogMigration };
         },
         setTestWrite(fn) { testWriteImpl = fn; },
+        setShareStore(store) { shareStore = store; },
+        refreshSharingTab,
+        createShareLink,
+        regenerateShareLink,
+        promptRegenerateShareLink,
+        setShareLinkActive,
+        refreshGuestViewFromButton,
+        approveSuggestion,
+        rejectSuggestion,
+        shareConfig: () => shareConfigCache,
+        suggestions: () => suggestionsCache,
         planMarkLivingForNonDeceased,
         applyMarkLivingForNonDeceased,
         formatMarkLivingConfirmation,

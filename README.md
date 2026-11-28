@@ -9,6 +9,7 @@ This repository is a generic, publishable starter. It ships no family data and n
 - An interactive tree canvas and an outline view
 - An admin panel for people, access lists, the change log, and GEDCOM import/export
 - Google sign-in
+- A replaceable share link so relatives can view a limited, guest copy of the tree without an account, plus a “Suggest a change” form (reviewed by admins before anything is saved)
 - Firestore security rules that reserve create/delete and access-list changes for the Super Admin
 - A compact change log with revert, plus a one-time move page if an older archive still stores history inside the tree document
 - A compact System / Light / Dark theme toggle in the tree and admin headers. The default follows the device, and the choice is saved in this browser
@@ -28,11 +29,12 @@ This repository is a generic, publishable starter. It ships no family data and n
 
 ## 2. Enable Google sign-in
 
-The app uses **Google** authentication only.
+The app uses **Google** authentication for family members. If you turn on a share link, visitors also need **Anonymous** sign-in (they never get a password; the page signs them in silently so the rules can grant a read-only guest view).
 
 1. In the console: **Build → Authentication → Get started**.
 2. Open the **Sign-in method** tab, enable **Google**, set a support email, and save.
-3. Under **Settings → Authorized domains**, keep `localhost` for testing and add your Hosting domain after the first deploy (Firebase usually adds `PROJECT_ID.web.app` and `PROJECT_ID.firebaseapp.com` for you).
+3. If you want share links, enable **Anonymous** on the same tab. Until you do, a share link shows “Guest links are switched off”.
+4. Under **Settings → Authorized domains**, keep `localhost` for testing and add your Hosting domain after the first deploy (Firebase usually adds `PROJECT_ID.web.app` and `PROJECT_ID.firebaseapp.com` for you).
 
 ## 3. Create a Cloud Firestore database
 
@@ -145,12 +147,14 @@ Old alias paths 301-redirect to the canonical pages: `/genealogy-studio.html` an
 2. That first visit creates the two archive documents. Anyone else who signs in before that will be denied until the archive exists.
 3. Open **Admin** (the quiet Admin control in the header). On **People & access**, add relatives by email and grant **View** or **Edit**. Only the Super Admin can change who may sign in.
 4. In-app **Admin** and **Edit** roles can update the tree (Edit) or also use the admin panel and rename the tree (Admin). They cannot replace the Super Admin or change the access lists.
+5. The Super Admin can open **Admin → Sharing** to create a share link, copy it, turn it off, or regenerate it (the old link stops working immediately). Admins can review suggested changes on the same tab. Nothing in the tree changes until a suggestion is approved. After you create a share link, deploy the updated Firestore rules as well as the pages, and enable Anonymous sign-in as in step 2.
 
 ### How access is enforced
 
 - Roles live in three lists on the tree document that only the Super Admin can change: `authorizedEmails` (view), `editorEmails` (edit), and `adminEmails` (admin). The Firestore rules enforce them.
 - The access list shown in the app (inside the tree data) is rebuilt from those lists every time the tree loads, so an editor who edits the tree data directly cannot grant anyone access. If the app finds a mismatch, the Super Admin sees an "Access check" notice.
 - Every save, including the Super Admin's, must be stamped with the writer's own account, keep the document's required fields, and move `revision` forward by exactly one. An older tab or a custom client that tries to overwrite a newer save is refused by the server.
+- A live share link is stored as `shareLinks/{token}` (readable by the Super Admin by id only; nobody can list or query tokens). Link visitors may read only the redacted `archives/{archiveId}_guest` document. They cannot write the tree. Suggested changes go to a `suggestions` collection: a Google-signed-in user can create a pending suggestion in their own name, and only admins can approve or reject it.
 
 ### Upgrading an existing site
 

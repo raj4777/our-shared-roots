@@ -21,6 +21,12 @@ rules_version = '2';
 //                 create or delete the archive, delete the log, impersonate
 //                 another user, change any access list, or skip a revision.
 //   Viewers     : emails in authorizedEmails only. Read-only.
+//   Link visitors: anyone (usually an anonymous sign-in) holding a live share
+//                 link may read ONLY archives/__ARCHIVE_ID___guest, a redacted
+//                 copy. They never read the full tree or the log, and their
+//                 only write is their own guestAccess/{uid} pointer.
+//   Suggesters  : any Google user with a verified email may create a pending
+//                 suggestion in their own name; admins review it.
 //   Everyone else (including signed-out users) is denied.
 //
 // Every write to the tree document, including the Super Admin's, must:
@@ -244,6 +250,140 @@ service cloud.firestore {
         && validLogUpdate()
         && stampedByMe(request.resource.data);
 
+      allow delete: if isSuperAdmin();
+    }
+
+    // ------------------------------------------------------------------
+    // Share link, guest view and suggested changes
+    // ------------------------------------------------------------------
+    // shareLinks/{token}: one document per live link, keyed by a 256-bit random
+    // token. Only the Super Admin can get it by id; nobody can list or query the
+    // collection, so a token can't be discovered from the database.
+    // shareConfig/__ARCHIVE_ID__: the Super Admin's own record of the current
+    // token (so the Admin page can show and copy it). Super Admin only.
+    // guestAccess/{uid}: a visitor (anonymous or Google) records the token from
+    // their link here. It is the only thing a link visitor can write, it is
+    // their own document, and it is accepted only for a live link.
+    // archives/__ARCHIVE_ID___guest: a redacted copy of the tree (names,
+    // relationships and structure; dates/places only for the deceased; no
+    // emails, photos of the living, notes or access lists). Link visitors may
+    // read this one document and nothing else in the tree.
+    function shareLinkPath(token) {
+      return /databases/$(database)/documents/shareLinks/$(token);
+    }
+    function guestAccessPath(uid) {
+      return /databases/$(database)/documents/guestAccess/$(uid);
+    }
+    function linkIsLive(token) {
+      return token is string && exists(shareLinkPath(token))
+        && get(shareLinkPath(token)).data.active == true;
+    }
+    function holdsLiveLink() {
+      return request.auth != null
+        && exists(guestAccessPath(request.auth.uid))
+        && linkIsLive(get(guestAccessPath(request.auth.uid)).data.token);
+    }
+    // A Google identity with a verified email (also true after an anonymous
+    // visitor links their Google account).
+    function isGoogleUser() {
+      return signedIn()
+        && (request.auth.token.firebase.sign_in_provider == 'google.com'
+            || 'google.com' in request.auth.token.firebase.get('identities', {}));
+    }
+    function isTreeAdmin() {
+      return isSuperAdmin() || (exists(archivePath()) && isAdminOf(get(archivePath()).data));
+    }
+
+    match /shareConfig/{treeId} {
+      allow get: if isSuperAdmin();
+      allow list: if false;
+      allow create, update: if isSuperAdmin() && treeId == '__ARCHIVE_ID__'
+        && request.resource.data.keys().hasOnly(['token', 'active', 'treeId', 'updatedAt', 'updatedByUid'])
+        && request.resource.data.token is string && request.resource.data.token.size() >= 40
+        && request.resource.data.active is bool
+        && request.resource.data.treeId == treeId
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.updatedByUid == request.auth.uid;
+      allow delete: if isSuperAdmin();
+    }
+
+    match /shareLinks/{token} {
+      allow get: if isSuperAdmin();
+      allow list: if false;
+      allow create: if isSuperAdmin()
+        && token.size() >= 40 && token.size() <= 128
+        && request.resource.data.keys().hasOnly(['active', 'treeId', 'createdAt', 'createdByUid'])
+        && request.resource.data.active is bool
+        && request.resource.data.treeId == '__ARCHIVE_ID__'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.createdByUid == request.auth.uid;
+      allow update: if isSuperAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active'])
+        && request.resource.data.active is bool;
+      allow delete: if isSuperAdmin();
+    }
+
+    match /guestAccess/{uid} {
+      allow get: if request.auth != null && request.auth.uid == uid;
+      allow list: if false;
+      allow create, update: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['token', 'createdAt'])
+        && request.resource.data.token is string
+        && request.resource.data.token.size() >= 40 && request.resource.data.token.size() <= 128
+        && request.resource.data.createdAt == request.time
+        && linkIsLive(request.resource.data.token);
+      allow delete: if request.auth != null && request.auth.uid == uid;
+    }
+
+    match /archives/__ARCHIVE_ID___guest {
+      allow get: if canReadArchive() || holdsLiveLink();
+      allow list: if false;
+      // Editors refresh it after their saves. The rules check its shape and
+      // stamp, but cannot inspect what is inside payloadJson: the redaction
+      // itself is done by the page (src/share-core.js).
+      allow create, update: if canEditArchive()
+        && request.resource.data.keys().hasOnly(['format', 'payloadJson', 'revision', 'updatedAt', 'updatedByEmail', 'updatedByUid'])
+        && request.resource.data.format == 'guest-v1'
+        && request.resource.data.payloadJson is string
+        && request.resource.data.payloadJson.size() <= 1000000
+        && request.resource.data.revision is int
+        && request.resource.data.updatedAt is string
+        && stampedByMe(request.resource.data);
+      allow delete: if isSuperAdmin();
+    }
+
+    // suggestions/{id}: a Google-signed-in user (verified email) may create a
+    // pending suggestion in their own name only. They may read their own, never
+    // anyone else's, and can never change one. Admins (and the Super Admin)
+    // list them and mark them approved or rejected, stamped with their own
+    // identity. Approving applies the change through a normal tree save.
+    function validSuggestionCreate(d) {
+      return d.keys().hasOnly(['personId', 'field', 'oldValue', 'newValue', 'note', 'email', 'uid', 'createdAt', 'status'])
+        && d.keys().hasAll(['personId', 'field', 'oldValue', 'newValue', 'note', 'email', 'uid', 'createdAt', 'status'])
+        && d.personId is string && d.personId.size() > 0 && d.personId.size() <= 100
+        && d.field in ['given', 'surname', 'nickname', 'altName', 'birthDate', 'birthPlace', 'deathDate', 'deathPlace', 'other']
+        && d.oldValue is string && d.oldValue.size() <= 2000
+        && d.newValue is string && d.newValue.size() > 0 && d.newValue.size() <= 2000
+        && d.note is string && d.note.size() <= 2000
+        && d.email == myEmail()
+        && d.uid == request.auth.uid
+        && d.createdAt == request.time
+        && d.status == 'pending';
+    }
+    match /suggestions/{suggestionId} {
+      allow create: if isGoogleUser() && validSuggestionCreate(request.resource.data);
+      allow get: if (request.auth != null && resource.data.uid == request.auth.uid) || isTreeAdmin();
+      allow list: if isTreeAdmin();
+      allow update: if isTreeAdmin()
+        && resource.data.status == 'pending'
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['status', 'reviewedByEmail', 'reviewedByUid', 'reviewedAt', 'reviewNote'])
+        && request.resource.data.status in ['approved', 'rejected']
+        && request.resource.data.reviewedByEmail == myEmail()
+        && request.resource.data.reviewedByUid == request.auth.uid
+        && request.resource.data.reviewedAt == request.time
+        && request.resource.data.get('reviewNote', '') is string
+        && request.resource.data.get('reviewNote', '').size() <= 2000;
       allow delete: if isSuperAdmin();
     }
 

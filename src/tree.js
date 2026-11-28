@@ -4,6 +4,7 @@ window.OSR_APPCHECK = window.OSR_APPCHECK || { siteKey: '', enterprise: false };
 import { applyHostingAuthDomain } from './firebase-config.js';
 import { computeAccessListsFromPermissions, frozenAccessListsFromMainDoc, reconcilePermissionsWithMainDoc, describeAclReport, nextArchiveRevision } from './acl-core.js';
 import { createEditLockManager } from './edit-locks.js';
+import { createShareStore, readShareTokenFromUrl, stripShareTokenFromUrl, guestStateFromDoc, buildGuestDocFields, GUEST_TOKEN_STORAGE_KEY, GUEST_BANNER_TEXT, SUGGESTION_FIELDS, currentValueForField, buildSuggestion, validateSuggestion, isWellFormedToken } from './share-core.js';
 import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendChangeLogEntry, applyDomainDiffToSnap, assignLogCheckpoints, clearAppErrorLog, compactChangeLogEvents, computeDomainDiff, deepClone, describeLogStorage, describeMainStorage, entryIsRevertible, escapeHtml, extractEmbeddedLog, formatFirestoreError, formatStorageKb, generateId, getArchiveDocPath, getArchiveId, getArchiveLogDocPath, getArchiveLogId, getEntryDiff, getOsConfig, isOfflineWriteError, isOwnEchoSnapshot, jsonFitsInDoc, loadAppErrorLog, logStateFromLogDoc, mergeLogStates, openFirestoreDatabase, paintStorageRow, reconstructStateBeforeEntry, recordAppError, rememberOwnStamp, reservedSizeForFields, trimChangeLogToFit, writeArchiveAndLog } from './save-core.js';
 
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -17,7 +18,10 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       signInWithPopup,
       signInWithRedirect,
       getRedirectResult,
-      signOut
+      signOut,
+      signInAnonymously,
+      linkWithPopup,
+      signInWithCredential
     } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
     import {
       getFirestore,
@@ -34,11 +38,39 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       deleteDoc,
       serverTimestamp,
       Timestamp,
+      addDoc,
+      updateDoc,
+      writeBatch,
+      getDocs,
+      query,
+      orderBy,
+      limit,
     } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
     import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
     import { initializeAppCheck, ReCaptchaV3Provider, ReCaptchaEnterpriseProvider } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app-check.js";
 
     configureSaveCore({ getDb: () => db, getFirebaseUser: () => firebaseUser });
+
+    // Share-link visitors (guest view) and suggested changes (src/share-core.js).
+    // guestSession.active: the page shows the redacted guest copy, read-only.
+    let guestSession = { active: false, token: '', status: '' };
+    let shareStore = createShareStore(() => db, { doc, getDoc, setDoc, deleteDoc, updateDoc, writeBatch, collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp }, { treeId: getArchiveId });
+    function pendingGuestToken() {
+      const fromUrl = readShareTokenFromUrl(location.href);
+      if (fromUrl) {
+        try { localStorage.setItem(GUEST_TOKEN_STORAGE_KEY, fromUrl); } catch (e) {}
+        // Keep the token out of the address bar (screenshots, shared tabs).
+        try { history.replaceState(null, '', stripShareTokenFromUrl(location.href)); } catch (e) {}
+        return fromUrl;
+      }
+      try {
+        const saved = localStorage.getItem(GUEST_TOKEN_STORAGE_KEY) || '';
+        return isWellFormedToken(saved) ? saved : '';
+      } catch (e) { return ''; }
+    }
+    function forgetGuestToken() {
+      try { localStorage.removeItem(GUEST_TOKEN_STORAGE_KEY); } catch (e) {}
+    }
 
     function getSiteTitle() {
       const t = String(getOsConfig().siteTitle || 'Family Tree').trim();
@@ -1759,6 +1791,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     }
 
     function getEffectiveSessionRole() {
+      if (guestSession.active) return 'guest';
       const email = getActiveUserEmail();
       if (!email || !firebaseUser) return 'signed_out';
       if (firestoreAccessDenied) return 'unauthorized';
@@ -1779,12 +1812,14 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     }
 
     function isAuthorizedViewer() {
+      if (guestSession.active) return true;
       if (!firebaseUser || !firebaseUser.email) return false;
       const role = getEffectiveSessionRole();
       return role === 'super_admin' || role === 'admin' || role === 'edit' || role === 'view';
     }
 
     function canEditTree() {
+      if (guestSession.active) return false;
       if (!firebaseUser || !firebaseUser.email) return false;
       const role = getEffectiveSessionRole();
       return role === 'super_admin' || role === 'admin' || role === 'edit';
@@ -1835,6 +1870,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     }
 
     function canAccessAdminPanel() {
+      if (guestSession.active) return false;
       if (!firebaseUser || !firebaseUser.email) return false;
       const role = getEffectiveSessionRole();
       return role === 'super_admin' || role === 'admin';
@@ -2904,6 +2940,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           try { syncChannel.postMessage({ type: 'FIRESTORE_COMMITTED' }); } catch (e) {}
         }
         hooks.onSaved();
+        scheduleGuestViewRefresh();
         return { ok: true };
       } catch (err) {
         hooks.onError(err);
@@ -3006,7 +3043,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           console.warn('Redirect sign-in note:', redirErr?.code || redirErr);
         });
 
-        onAuthStateChanged(auth, async (user) => {
+        handleAuthUser = async (user) => {
           const myGeneration = ++authGeneration;
           authStateResolved = true;
           firebaseUser = user;
@@ -3019,8 +3056,29 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           latestMainData = null;
           latestLogData = null;
           stopDocListeners();
+          guestSession = { active: false, token: '', status: '' };
+          const guestToken = pendingGuestToken();
+
+          // A share link (?t=...) with nobody signed in: sign in anonymously,
+          // silently. onAuthStateChanged then comes back with that user.
+          if (!user && guestToken && !guestSignInAttempted) {
+            guestSignInAttempted = true;
+            guestSession.status = 'opening';
+            signInAnonymously(auth).catch((anonErr) => {
+              console.warn('Guest sign-in failed:', anonErr?.code || anonErr);
+              guestSession = { active: false, token: '', status: anonErr?.code === 'auth/operation-not-allowed' || anonErr?.code === 'auth/admin-restricted-operation' ? 'anon-disabled' : 'inactive' };
+              renderAll();
+            });
+          }
+          if (user && !user.email && guestToken) {
+            sessionAuth = { email: '', displayName: '', photoURL: '', isAuthenticated: false };
+            purgeLocalCachedRecords();
+            await enterGuestView(user, guestToken, myGeneration);
+            return;
+          }
 
           if (!user || !user.email) {
+            const keepStatus = guestSession.status;
             sessionAuth = { email: '', displayName: '', photoURL: '', isAuthenticated: false };
             appState = normalizeAppState(createBlankDataset());
             undoStack = [];
@@ -3028,6 +3086,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
             purgeLocalCachedRecords();
             stopDocListeners();
             closeInspector();
+            guestSession.status = keepStatus;
             setCloudSyncIndicator('offline', 'Sign In Required');
             renderAll();
             return;
@@ -3075,6 +3134,13 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
             }
           } catch (readErr) {
             if (myGeneration !== authGeneration) return;
+            if (readErr?.code === 'permission-denied' && guestToken) {
+              // Signed in with Google but not on the lists: keep the guest view
+              // from the share link (now with an email, so they can suggest).
+              purgeLocalCachedRecords();
+              await enterGuestView(user, guestToken, myGeneration);
+              return;
+            }
             if (readErr?.code === 'permission-denied') {
               firestoreAccessDenied = true;
               appState = normalizeAppState(createBlankDataset());
@@ -3160,7 +3226,8 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           );
 
           applyUserIdentityToTree(true);
-        });
+        };
+        onAuthStateChanged(auth, handleAuthUser);
 
         // Race authStateReady against a 2.5s ceiling so embedded iframes never hang
         await Promise.race([
@@ -3205,6 +3272,11 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         showToast('Firebase configuration not detected.');
         return;
       }
+      if (auth.currentUser && auth.currentUser.isAnonymous) {
+        const ok = await upgradeGuestToGoogle();
+        if (ok) document.getElementById('modal-google-auth')?.classList.add('hidden');
+        return;
+      }
       try {
         const provider = new GoogleAuthProvider();
         if (forceSelectAccount) {
@@ -3225,6 +3297,184 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       }
     }
 
+    let handleAuthUser = async () => {};
+    let guestSignInAttempted = false;
+
+    // Loads the redacted guest copy for a share-link visitor. The visitor first
+    // records the link's token in guestAccess/{uid}; the rules accept that only
+    // for a live link, and the guest copy is readable only with a live claim.
+    async function enterGuestView(user, token, myGeneration) {
+      setCloudSyncIndicator('syncing', 'Opening shared view...');
+      try {
+        await shareStore.claimToken(user.uid, token);
+        const data = await shareStore.loadGuestView();
+        if (myGeneration !== authGeneration) return;
+        const st = guestStateFromDoc(data);
+        if (!st) throw Object.assign(new Error('The shared view has not been published yet.'), { code: 'not-found' });
+        applyGuestState(st, token);
+      } catch (err) {
+        if (myGeneration !== authGeneration) return;
+        console.warn('Share link could not be opened:', err?.code || err);
+        if (err?.code === 'permission-denied') forgetGuestToken();
+        guestSession = { active: false, token: '', status: err?.code === 'not-found' ? 'not-published' : 'inactive' };
+        appState = normalizeAppState(createBlankDataset());
+        closeInspector();
+        setCloudSyncIndicator('offline', 'Share link inactive');
+        renderAll();
+      }
+    }
+
+    function applyGuestState(st, token) {
+      appState = normalizeAppState(st);
+      guestSession = { active: true, token, status: 'ok' };
+      firestoreAccessDenied = false;
+      undoStack = [];
+      redoStack = [];
+      if (typeof invalidateTreeLayoutCache === 'function') invalidateTreeLayoutCache();
+      const cid = (appState.centralPersonId && appState.persons[appState.centralPersonId]) ? appState.centralPersonId : (Object.keys(appState.persons)[0] || null);
+      appState.centralPersonId = cid;
+      if (!appState.selectedPersonId || !appState.persons[appState.selectedPersonId]) appState.selectedPersonId = cid;
+      setCloudSyncIndicator('saved', 'Guest view');
+      renderAll();
+      if (cid) requestAnimationFrame(() => centerOnPerson(cid, true));
+    }
+
+    // Anonymous visitor -> Google: link the Google account to the anonymous
+    // one (same uid), or sign in to an existing Google account if it is
+    // already registered. Either way the normal load runs again, so a family
+    // member on the lists gets the full tree.
+    async function upgradeGuestToGoogle() {
+      if (!auth) { showToast('Firebase configuration not detected.'); return false; }
+      const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: 'select_account' });
+      try {
+        const cur = auth.currentUser;
+        if (cur && cur.isAnonymous) {
+          try {
+            const res = await linkWithPopup(cur, provider);
+            try { await res.user.getIdToken(true); } catch (e) {}
+            await handleAuthUser(auth.currentUser);
+          } catch (err) {
+            if (err?.code === 'auth/credential-already-in-use' || err?.code === 'auth/email-already-in-use') {
+              const cred = GoogleAuthProvider.credentialFromError(err);
+              if (!cred) throw err;
+              await signInWithCredential(auth, cred);
+            } else {
+              throw err;
+            }
+          }
+        } else {
+          await signInWithPopup(auth, provider);
+        }
+        if (authChannel) {
+          try { authChannel.postMessage({ type: 'AUTH_UPDATED' }); } catch (e) {}
+        }
+        return true;
+      } catch (err) {
+        console.warn('Guest Google sign-in error:', err?.code || err);
+        if (err?.code !== 'auth/popup-closed-by-user' && err?.code !== 'auth/cancelled-popup-request') {
+          showToast(`Google Sign-In failed: ${err?.message || err?.code}`);
+        }
+        return false;
+      }
+    }
+
+    // After an editor's save, refresh the redacted guest copy, but only if the
+    // Super Admin has set sharing up (the guest document exists).
+    let guestRefreshTimer = null;
+    function scheduleGuestViewRefresh(delayMs = 3000) {
+      if (guestSession.active || !canEditTree()) return;
+      clearTimeout(guestRefreshTimer);
+      guestRefreshTimer = setTimeout(() => { refreshGuestViewIfShared(); }, delayMs);
+    }
+    async function refreshGuestViewIfShared() {
+      if (guestSession.active || !canEditTree() || !firebaseUser) return { ok: false, skipped: true };
+      try {
+        if (!(await shareStore.guestViewExists())) return { ok: true, skipped: true };
+        const fields = buildGuestDocFields(appState, { updatedAt: new Date().toISOString(), updatedByEmail: getActiveUserEmail(), updatedByUid: firebaseUser.uid });
+        await shareStore.publishGuestView(fields);
+        return { ok: true, fields };
+      } catch (err) {
+        console.warn('Guest view refresh skipped:', err?.code || err);
+        return { ok: false, error: err };
+      }
+    }
+
+    // Suggest a change (anyone who cannot edit: guests and View members)
+    let suggestPersonId = null;
+    function canSuggestChanges() {
+      return isAuthorizedViewer() && !canEditTree();
+    }
+    function hasGoogleEmail() {
+      return Boolean(firebaseUser && firebaseUser.email && !firebaseUser.isAnonymous);
+    }
+    function paintSuggestCurrent() {
+      const person = appState.persons[suggestPersonId];
+      const field = document.getElementById('suggest-field')?.value || 'given';
+      const cur = currentValueForField(person, field);
+      const curEl = document.getElementById('suggest-current');
+      const wrap = document.getElementById('suggest-current-wrap');
+      if (curEl) curEl.textContent = cur || (field === 'other' ? '' : (guestSession.active ? 'not shown in the guest view' : 'not recorded'));
+      if (wrap) wrap.classList.toggle('hidden', field === 'other');
+      const lbl = document.getElementById('suggest-new-label');
+      if (lbl) lbl.textContent = field === 'other' ? 'Describe the change' : 'Proposed value';
+    }
+    function openSuggestChange(personId) {
+      const person = personId ? appState.persons[personId] : null;
+      if (!person) return false;
+      suggestPersonId = personId;
+      const modal = document.getElementById('modal-suggest-change');
+      document.getElementById('suggest-person').textContent = 'For ' + getDisplayName(person, true);
+      const sel = document.getElementById('suggest-field');
+      if (sel && !sel.options.length) {
+        SUGGESTION_FIELDS.forEach(f => { const o = document.createElement('option'); o.value = f.key; o.textContent = f.label; sel.appendChild(o); });
+      }
+      const signedIn = hasGoogleEmail();
+      document.getElementById('suggest-signin-step').classList.toggle('hidden', signedIn);
+      document.getElementById('suggest-form').classList.toggle('hidden', !signedIn);
+      document.getElementById('suggest-from').textContent = signedIn ? ('Sent as ' + getActiveUserEmail()) : '';
+      const errEl = document.getElementById('suggest-error');
+      errEl.textContent = ''; errEl.classList.add('hidden');
+      paintSuggestCurrent();
+      modal.classList.remove('hidden');
+      return true;
+    }
+    function closeSuggestChange() {
+      document.getElementById('modal-suggest-change')?.classList.add('hidden');
+    }
+    async function submitSuggestChange() {
+      const person = appState.persons[suggestPersonId];
+      const field = document.getElementById('suggest-field').value;
+      const sgt = buildSuggestion({
+        personId: suggestPersonId,
+        field,
+        oldValue: currentValueForField(person, field),
+        newValue: document.getElementById('suggest-new').value,
+        note: document.getElementById('suggest-note').value,
+        email: hasGoogleEmail() ? getActiveUserEmail() : '',
+        uid: firebaseUser && firebaseUser.uid
+      });
+      const problem = validateSuggestion(sgt);
+      const errEl = document.getElementById('suggest-error');
+      if (problem) { errEl.textContent = problem; errEl.classList.remove('hidden'); return { ok: false, error: problem }; }
+      const btn = document.getElementById('btn-suggest-submit');
+      btn.disabled = true;
+      try {
+        await shareStore.submitSuggestion(sgt);
+        closeSuggestChange();
+        document.getElementById('suggest-new').value = '';
+        document.getElementById('suggest-note').value = '';
+        showToast('Thank you. Your suggestion was sent to the family admins for review.');
+        return { ok: true, suggestion: sgt };
+      } catch (err) {
+        errEl.textContent = 'Could not send: ' + (formatFirestoreError(err).text || err?.message || err?.code);
+        errEl.classList.remove('hidden');
+        return { ok: false, error: err };
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
     async function signInWithGoogleRedirectFlow() {
       if (!auth) return;
       try {
@@ -3236,6 +3486,8 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     }
 
     async function signOutGoogleUser() {
+      forgetGuestToken();
+      guestSession = { active: false, token: '', status: '' };
       pendingSaveState = null;
       undoStack = [];
       redoStack = [];
@@ -4340,7 +4592,16 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         const isEmbeddedIframe = window.self !== window.top;
         if (fullTabHint) fullTabHint.classList.toggle('hidden', !isEmbeddedIframe);
 
-        if (activeRole === 'unauthorized') {
+        if (guestSession.status === 'opening' || guestSession.status === 'inactive' || guestSession.status === 'not-published' || guestSession.status === 'anon-disabled') {
+          badgeEl.textContent = 'Signed out';
+          badgeEl.className = 'role-hint text-[9.5px] shrink-0';
+          unauthTitle.textContent = guestSession.status === 'opening' ? 'Opening the shared family tree…' : 'This share link is not available';
+          unauthSub.textContent = guestSession.status === 'opening' ? 'One moment.'
+            : guestSession.status === 'anon-disabled' ? 'Guest links are switched off for this site right now. You can still sign in with an authorized Google Account.'
+            : guestSession.status === 'not-published' ? 'The shared view has not been published yet. Ask the family admin to refresh it, or sign in with Google.'
+            : 'This link has been turned off or replaced. Ask the family for the current link, or sign in with an authorized Google Account.';
+          readonlyBanner.classList.add('hidden');
+        } else if (activeRole === 'unauthorized') {
           badgeEl.textContent = 'Restricted';
           badgeEl.className = 'role-hint text-[9.5px] shrink-0';
           unauthTitle.textContent = 'Account Not Yet Authorized';
@@ -4367,7 +4628,18 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           : 'Cloud Firestore storage is currently empty. Click below to add the founding person to begin building your family tree.';
       }
 
-      if (activeRole === 'super_admin' || activeRole === 'admin') {
+      readonlyBanner.dataset.guest = guestSession.active ? 'true' : 'false';
+      const bannerBtn = document.getElementById('btn-banner-signin');
+      if (bannerBtn) bannerBtn.textContent = (guestSession.active && !hasGoogleEmail()) ? 'Sign in with Google' : 'Switch Account';
+      if (guestSession.active) {
+        badgeEl.textContent = 'Guest';
+        badgeEl.className = 'role-hint text-[9.5px] shrink-0';
+        readonlyBadge.textContent = 'Guest';
+        readonlyMsg.textContent = hasGoogleEmail()
+          ? `${GUEST_BANNER_TEXT} Signed in as ${activeEmail}, who is not on this tree's access list yet.`
+          : GUEST_BANNER_TEXT;
+        readonlyBanner.classList.remove('hidden');
+      } else if (activeRole === 'super_admin' || activeRole === 'admin') {
         // Role is a tooltip / dot on the single Admin control, not a coloured badge.
         badgeEl.textContent = '';
         badgeEl.className = 'role-hint hidden text-[9.5px] shrink-0';
@@ -4829,7 +5101,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
               </button>
             ` : ''}
 
-            ${isCentral ? `
+            ${isCentral && !guestSession.active ? `
               <span title="Logged-In Central Person" class="you-badge absolute -top-2.5 px-1.5 py-0.2 rounded-full bg-archival-indigo text-white text-[9px] font-bold uppercase tracking-wider shadow-2xs">
                 You
               </span>
@@ -5025,7 +5297,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
                     <div class="font-semibold text-xs text-slate-900 truncate">${escapeHtml(getDisplayName(p))}</div>
                     <div class="text-[11px] text-slate-500 truncate">${escapeHtml(getVitalSummary(p))}</div>
                   </div>
-                  ${p.id === appState.centralPersonId ? `<span class="px-1.5 py-0.5 rounded-full bg-archival-indigo text-white text-[9px] font-bold uppercase shrink-0">You</span>` : ''}
+                  ${p.id === appState.centralPersonId && !guestSession.active ? `<span class="px-1.5 py-0.5 rounded-full bg-archival-indigo text-white text-[9px] font-bold uppercase shrink-0">You</span>` : ''}
                 </button>
               `).join('')}
             </div>
@@ -5096,6 +5368,10 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
       if (uiState.inspectorTab === 'evidence') uiState.inspectorTab = 'profile';
 
       updateCircleActionActiveState();
+      document.getElementById('btn-insp-suggest')?.classList.toggle('hidden', !canSuggestChanges());
+      ['btn-insp-circle-edit', 'btn-insp-circle-add', 'btn-avatar-camera'].forEach(id => {
+        document.getElementById(id)?.classList.toggle('guest-hidden', guestSession.active);
+      });
 
       const avatarWrap = document.getElementById('inspector-avatar-wrap');
       const avatarImg = document.getElementById('inspector-avatar-img');
@@ -5138,7 +5414,11 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
 
       const kinshipLabelEl = document.getElementById('inspector-kinship-label');
       const centralId = appState.centralPersonId;
-      if (centralId && centralId === person.id) {
+      if (guestSession.active) {
+        // A link visitor is nobody in the tree: no "you" / "your ..." labels.
+        const genNum = (generations[person.id] ?? 0) + 1;
+        kinshipLabelEl.textContent = `Generation ${toRomanNumeral(genNum)}`;
+      } else if (centralId && centralId === person.id) {
         kinshipLabelEl.textContent = 'This is you';
       } else if (centralId && appState.persons[centralId]) {
         const kin = computeKinship(centralId, person.id);
@@ -5282,7 +5562,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
           <div class="divide-y divide-stone-200">
 
             <!-- 1. PHOTOS & VIDEOS ACCORDION ROW -->
-            <div>
+            <div class="${guestSession.active ? 'guest-hidden' : ''}">
               <div class="px-4 py-3.5 flex items-center justify-between">
                 <button type="button" data-toggle-accordion="photos" class="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-stone-600 hover:text-slate-900">
                   <span>PHOTOS &amp; VIDEOS${mediaItems.length > 0 ? ` (${mediaItems.length})` : ''}</span>
@@ -5337,7 +5617,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
             </div>
 
             <!-- 2. BIOGRAPHY ACCORDION ROW -->
-            <div>
+            <div class="${guestSession.active ? 'guest-hidden' : ''}">
               <div class="px-4 py-3.5 flex items-center justify-between">
                 <button type="button" data-toggle-accordion="bio" class="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-stone-600 hover:text-slate-900">
                   <span>BIOGRAPHY</span>
@@ -5518,7 +5798,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
             </div>
 
             <!-- 5. GOOGLE ACCOUNT & EMAIL ACCESS SECTION -->
-            <div class="p-4 bg-stone-50/70 space-y-2.5">
+            <div class="p-4 bg-stone-50/70 space-y-2.5 ${guestSession.active ? 'guest-hidden' : ''}">
               <div class="flex items-center justify-between">
                 <span class="text-[11px] font-bold uppercase tracking-wider text-stone-600">Google User Access (${emails.length})</span>
                 ${canAccessAdminPanel() ? `<a href="/admin.html" class="text-[11px] font-semibold text-archival-indigo hover:underline">Admin Panel →</a>` : ''}
@@ -6612,6 +6892,20 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         const id = appState.selectedPersonId || appState.centralPersonId;
         if (id) openQuickEditModal(id);
       });
+      document.getElementById('btn-insp-suggest')?.addEventListener('click', () => {
+        const id = appState.selectedPersonId || appState.centralPersonId;
+        if (id) openSuggestChange(id);
+      });
+      document.getElementById('btn-suggest-close')?.addEventListener('click', closeSuggestChange);
+      document.getElementById('btn-suggest-cancel')?.addEventListener('click', closeSuggestChange);
+      document.getElementById('suggest-field')?.addEventListener('change', paintSuggestCurrent);
+      document.getElementById('suggest-form')?.addEventListener('submit', (e) => { e.preventDefault(); submitSuggestChange(); });
+      document.getElementById('btn-suggest-signin')?.addEventListener('click', async () => {
+        const pid = suggestPersonId;
+        const ok = await upgradeGuestToGoogle();
+        if (ok && pid && appState.persons[pid] && canSuggestChanges()) openSuggestChange(pid);
+        else if (ok) closeSuggestChange();
+      });
       document.getElementById('btn-insp-circle-add')?.addEventListener('click', () => {
         uiState.inspectorTab = 'add';
         renderAll();
@@ -7691,6 +7985,20 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
     // Production builds define __OSR_TEST_HOOKS__ as false, so this block is dropped.
     if (__OSR_TEST_HOOKS__) {
       window.__TREE = {
+        setShareStore(store) { shareStore = store; },
+        loadGuest(guestDocData, { email = '', uid = 'anon-uid' } = {}) {
+          firebaseUser = { uid, email: email || null, isAnonymous: !email, emailVerified: Boolean(email) };
+          sessionAuth = { email: email || '', displayName: '', photoURL: '', isAuthenticated: Boolean(email) };
+          const st = guestStateFromDoc(guestDocData);
+          applyGuestState(st, 'test-token');
+          return Object.keys(appState.persons).length;
+        },
+        enterGuestView: (user, token) => enterGuestView(user, token, authGeneration),
+        guestSession: () => ({ ...guestSession }),
+        openSuggestChange,
+        submitSuggestChange,
+        refreshGuestViewIfShared,
+        canSuggestChanges,
         getState: () => appState,
         getUi: () => uiState,
         // Swap in a lock manager (tests pass a fake that mimics src/edit-locks.js).
@@ -7700,6 +8008,7 @@ import { configureSaveCore, LOG_CHECKPOINT_LIMIT, OFFLINE_SAVE_MESSAGE, appendCh
         prepareMainWrite,
         setLatestMainData: (d) => { latestMainData = d; },
         load(state) {
+          guestSession = { active: false, token: '', status: '' };
           appState = normalizeAppState(JSON.parse(JSON.stringify(state)));
           const email = (appState.superAdminEmail || getConfiguredSuperAdminEmail() || 'owner@example.com').toLowerCase();
           appState.superAdminEmail = email;

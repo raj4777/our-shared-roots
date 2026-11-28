@@ -10,8 +10,8 @@ export const PROD_DIST = path.join(ROOT, 'dist');
 export const DIST = path.join(ROOT, process.env.OSR_TEST_DIST || 'dist-test');
 
 const PAGE_SOURCES = {
-  'index.html': ['dist/index.html', 'src/tree.js', 'src/save-core.js', 'src/firebase-config.js'],
-  'admin.html': ['dist/admin.html', 'src/admin.js', 'src/save-core.js', 'src/firebase-config.js'],
+  'index.html': ['dist/index.html', 'src/tree.js', 'src/share-core.js', 'src/save-core.js', 'src/firebase-config.js'],
+  'admin.html': ['dist/admin.html', 'src/admin.js', 'src/share-core.js', 'src/save-core.js', 'src/firebase-config.js'],
   'migrate-log.html': ['dist/migrate-log.html', 'src/migrate-log.js', 'src/firebase-config.js'],
   '404.html': ['dist/404.html'],
   'offline.html': ['dist/offline.html'],

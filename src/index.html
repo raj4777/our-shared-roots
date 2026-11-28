@@ -215,6 +215,7 @@
 
     /* Responsive header (phones & tablets); desktop (>=1024px) is unchanged */
     .auth-hidden { display: none !important; }
+    .guest-hidden { display: none !important; }
     @media (max-width: 1023.98px) {
       #app-header button:not([data-search-pick]), #app-header a { min-height: 40px; }
       #app-header button:not(#btn-rename-tree):not([role^="menuitem"]):not([data-search-pick]), #app-header a { min-width: 40px; justify-content: center; }
@@ -886,11 +887,56 @@
             </div>
           </div>
         </div>
+        <button id="btn-insp-suggest" type="button" class="hidden w-full mt-1 px-3 py-2 rounded-xl border border-archival-indigo/40 bg-white hover:bg-parchment-50 text-archival-indigo text-xs font-semibold flex items-center justify-center gap-1.5 transition">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M8 10h8M8 14h5M21 12c0 4.4-4 8-9 8a9.9 9.9 0 01-4-.8L3 20l1.3-3.9A7.4 7.4 0 013 12c0-4.4 4-8 9-8s9 3.6 9 8z"/></svg>
+          Suggest a change
+        </button>
       </div>
 
       <!-- Scrollable Extension Sheet Body -->
       <div id="inspector-body" class="flex-1 overflow-y-auto bg-white select-text"></div>
     </aside>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- SUGGEST A CHANGE (guests and View members; reviewed by admins)        -->
+  <!-- ===================================================================== -->
+  <div id="modal-suggest-change" class="hidden fixed inset-0 bg-slate-900/50 backdrop-blur-xs z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="suggest-title">
+    <div class="bg-white border border-parchment-300 rounded-2xl shadow-2xl w-full max-w-md p-5 space-y-3.5 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-start justify-between gap-2">
+        <div class="min-w-0">
+          <h3 id="suggest-title" class="font-serif font-semibold text-base text-slate-900">Suggest a change</h3>
+          <p id="suggest-person" class="text-xs text-slate-600 mt-0.5 break-words"></p>
+        </div>
+        <button id="btn-suggest-close" type="button" aria-label="Close dialog" class="p-1 rounded-lg text-slate-400 hover:bg-parchment-100">✕</button>
+      </div>
+      <div id="suggest-signin-step" class="hidden space-y-3">
+        <p class="text-xs text-slate-700 leading-relaxed">To suggest a change, please sign in with Google first, so the family admins know who sent it. You will stay on this page.</p>
+        <button id="btn-suggest-signin" type="button" class="w-full py-2.5 px-4 rounded-xl bg-archival-indigo hover:bg-archival-indigoHover text-white text-xs font-semibold">Sign in with Google</button>
+      </div>
+      <form id="suggest-form" class="space-y-3 text-xs" novalidate>
+        <div>
+          <label for="suggest-field" class="block text-[11px] font-medium text-slate-600 mb-1">What should change?</label>
+          <select id="suggest-field" class="w-full px-2.5 py-2 bg-parchment-50 border border-parchment-300 rounded-lg"></select>
+        </div>
+        <p id="suggest-current-wrap" class="text-[11px] text-slate-600">Currently: <span id="suggest-current" class="font-medium text-slate-800"></span></p>
+        <div>
+          <label id="suggest-new-label" for="suggest-new" class="block text-[11px] font-medium text-slate-600 mb-1">Proposed value</label>
+          <input id="suggest-new" type="text" maxlength="2000" autocomplete="off" class="w-full px-3 py-2 bg-parchment-50 border border-parchment-300 rounded-lg focus:border-archival-indigo focus:bg-white" />
+        </div>
+        <div>
+          <label for="suggest-note" class="block text-[11px] font-medium text-slate-600 mb-1">Note for the admins (optional)</label>
+          <textarea id="suggest-note" rows="3" maxlength="2000" class="w-full px-3 py-2 bg-parchment-50 border border-parchment-300 rounded-lg focus:border-archival-indigo focus:bg-white" placeholder="How do you know? e.g. family records, a document"></textarea>
+        </div>
+        <p id="suggest-from" class="text-[11px] text-slate-500"></p>
+        <p id="suggest-error" role="alert" class="hidden text-xs text-rose-700"></p>
+        <div class="flex items-center justify-end gap-2 pt-1">
+          <button id="btn-suggest-cancel" type="button" class="px-3 py-1.5 rounded-xl text-xs font-medium text-slate-600 hover:bg-parchment-100">Cancel</button>
+          <button id="btn-suggest-submit" type="submit" class="px-3.5 py-1.5 rounded-xl bg-archival-indigo hover:bg-archival-indigoHover text-white text-xs font-semibold">Send suggestion</button>
+        </div>
+        <p class="text-[11px] text-slate-500 leading-relaxed">Nothing in the tree changes until an admin approves your suggestion.</p>
+      </form>
+    </div>
   </div>
 
   <!-- ===================================================================== -->

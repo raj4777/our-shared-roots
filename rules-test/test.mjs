@@ -1,5 +1,6 @@
 import { initializeTestEnvironment, assertSucceeds, assertFails } from '@firebase/rules-unit-testing';
-import { doc, getDoc, setDoc, deleteDoc, runTransaction, onSnapshot, collection } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc, updateDoc, addDoc, writeBatch, query, where, runTransaction, onSnapshot, collection, getDocs, Timestamp, serverTimestamp } from 'firebase/firestore';
+import { generateShareToken, buildGuestDocFields, buildSuggestion } from '../src/share-core.js';
 import fs from 'node:fs';
 import { reconcilePermissionsWithMainDoc, computeAccessListsFromPermissions, frozenAccessListsFromMainDoc, nextArchiveRevision } from '../src/acl-core.js';
 
@@ -369,6 +370,97 @@ await check('SA path: valid stamped log allowed', true, () => setDoc(logRef(sup)
 await env.withSecurityRulesDisabled(async c => { await setDoc(logRef(c.firestore()), { ...logPayload(SUPER, 'uid-super'), legacyNote: 'x' }); });
 await check('log: an older log doc with an extra field can still be updated by an editor', true, () => setDoc(logRef(ed), logPayload(EDITOR, 'uid-ed'), { merge: true }));
 await check('log: an older log doc with an extra field can still be updated by the SA', true, () => setDoc(logRef(sup), logPayload(SUPER, 'uid-super'), { merge: true }));
+
+// --- Share link, guest view, suggestions
+await env.clearFirestore(); await seed();
+{
+  const anonCtx = (uid) => env.authenticatedContext(uid, { firebase: { sign_in_provider: 'anonymous' } }).firestore();
+  const gctx = (uid, email, { verified = true, provider = 'google.com' } = {}) => env.authenticatedContext(uid, {
+    email, email_verified: verified,
+    firebase: provider === 'google.com' ? { sign_in_provider: 'google.com', identities: { 'google.com': ['g-' + uid], email: [email] } } : { sign_in_provider: provider, identities: { email: [email] } }
+  }).firestore();
+  const linkedCtx = (uid, email) => env.authenticatedContext(uid, { email, email_verified: true, firebase: { sign_in_provider: 'anonymous', identities: { 'google.com': ['g-' + uid], email: [email] } } }).firestore();
+  const TOKEN = generateShareToken(), TOKEN2 = generateShareToken();
+  const guestRef = db => doc(db, 'archives', ARCHIVE_ID + '_guest');
+  const rotate = (db, uid, newT, oldT, active = true) => { const b = writeBatch(db); b.set(doc(db, 'shareLinks', newT), { active, treeId: ARCHIVE_ID, createdAt: serverTimestamp(), createdByUid: uid }); if (oldT) b.delete(doc(db, 'shareLinks', oldT)); b.set(doc(db, 'shareConfig', ARCHIVE_ID), { token: newT, active, treeId: ARCHIVE_ID, updatedAt: serverTimestamp(), updatedByUid: uid }); return b.commit(); };
+  const claim = (db, uid, token) => setDoc(doc(db, 'guestAccess', uid), { token, createdAt: serverTimestamp() });
+  const guestFields = (email, uid) => buildGuestDocFields({ tree: { title: 'Family Tree', revision: 2 }, persons: { p1: { id: 'p1', given: 'Alex', livingStatus: 'living', emails: ['alex@example.com'], events: [{ type: 'BIRT', date: '2001' }] } }, families: {} }, { updatedAt: new Date().toISOString(), updatedByEmail: email, updatedByUid: uid });
+  const an1 = anonCtx('uid-anon1'), an2 = anonCtx('uid-anon2'), an3 = anonCtx('uid-anon3');
+
+  await check('share: editor cannot create a share link', false, () => rotate(ed, 'uid-ed', TOKEN));
+  await check('share: super admin cannot create a short (guessable) token', false, () => setDoc(doc(sup, 'shareLinks', 'short'), { active: true, treeId: ARCHIVE_ID, createdAt: serverTimestamp(), createdByUid: 'uid-super' }));
+  await check('share: super admin creates link + config in one batch', true, () => rotate(sup, 'uid-super', TOKEN));
+  await check('share: super admin can read the config', true, () => getDoc(doc(sup, 'shareConfig', ARCHIVE_ID)));
+  await check('share: editor cannot read the config (token)', false, () => getDoc(doc(ed, 'shareConfig', ARCHIVE_ID)));
+  await check('share: anonymous cannot read the config (token)', false, () => getDoc(doc(an1, 'shareConfig', ARCHIVE_ID)));
+  await check('share: anonymous cannot get shareLinks/{token} even with the token', false, () => getDoc(doc(an1, 'shareLinks', TOKEN)));
+  await check('share: editor cannot get shareLinks/{token}', false, () => getDoc(doc(ed, 'shareLinks', TOKEN)));
+  await check('share: anonymous cannot list shareLinks', false, () => getDocs(collection(an1, 'shareLinks')));
+  await check('share: anonymous cannot query shareLinks by active', false, () => getDocs(query(collection(an1, 'shareLinks'), where('active', '==', true))));
+  await check('share: even the super admin cannot list shareLinks', false, () => getDocs(collection(sup, 'shareLinks')));
+  await check('share: anonymous cannot list guestAccess', false, () => getDocs(collection(an1, 'guestAccess')));
+  await check('share: editor publishes the guest view', true, () => setDoc(guestRef(ed), guestFields(EDITOR, 'uid-ed')));
+  await check('share: editor cannot stamp the guest view as someone else', false, () => setDoc(guestRef(ed), guestFields(SUPER, 'uid-super')));
+  await check('share: editor cannot add unknown fields to the guest view', false, () => setDoc(guestRef(ed), { ...guestFields(EDITOR, 'uid-ed'), payloadFull: 'x' }));
+  await check('share: viewer cannot write the guest view', false, () => setDoc(guestRef(vw), guestFields(VIEWER, 'uid-vw')));
+  await check('share: anonymous without a claim cannot read the guest view', false, () => getDoc(guestRef(an1)));
+  await check('share: anonymous cannot claim a made-up token', false, () => claim(an1, 'uid-anon1', generateShareToken()));
+  await check('share: anonymous cannot claim for another uid', false, () => claim(an1, 'uid-anon2', TOKEN));
+  await check('share: anonymous claims the live token for itself', true, () => claim(an1, 'uid-anon1', TOKEN));
+  await check('share: anonymous cannot add fields to its claim', false, () => setDoc(doc(an1, 'guestAccess', 'uid-anon1'), { token: TOKEN, createdAt: serverTimestamp(), role: 'edit' }));
+  await check('share: anonymous with a live link reads the guest view', true, () => getDoc(guestRef(an1)));
+  await check('share: anonymous with a live link still cannot read the full tree', false, () => getDoc(ref(an1)));
+  await check('share: anonymous with a live link cannot read the change log', false, () => getDoc(logRef(an1)));
+  await check('share: anonymous with a live link cannot read edit locks', false, () => getDocs(collection(an1, 'archives', ARCHIVE_ID, 'locks')));
+  await check('share: anonymous with a live link cannot write the guest view', false, () => setDoc(guestRef(an1), guestFields('x@example.com', 'uid-anon1')));
+  await check('share: anonymous with a live link cannot write the tree', false, () => setMain(an1, pagePayload(SUPER, 'uid-anon1', basePerms)));
+  await check('share: anonymous cannot flip the link on/off', false, () => updateDoc(doc(an1, 'shareLinks', TOKEN), { active: true }));
+  await check('share: anonymous cannot create a suggestion', false, () => addDoc(collection(an1, 'suggestions'), { ...buildSuggestion({ personId: 'p1', field: 'given', oldValue: '', newValue: 'X', note: '', email: '', uid: 'uid-anon1' }), createdAt: serverTimestamp() }));
+  await check('share: super admin turns the link off', true, () => { const b = writeBatch(sup); b.update(doc(sup, 'shareLinks', TOKEN), { active: false }); b.set(doc(sup, 'shareConfig', ARCHIVE_ID), { token: TOKEN, active: false, treeId: ARCHIVE_ID, updatedAt: serverTimestamp(), updatedByUid: 'uid-super' }); return b.commit(); });
+  await check('share: link off -> anonymous can no longer read the guest view', false, () => getDoc(guestRef(an1)));
+  await check('share: link off -> a new visitor cannot claim it', false, () => claim(an2, 'uid-anon2', TOKEN));
+  await check('share: super admin cannot change other link fields', false, () => updateDoc(doc(sup, 'shareLinks', TOKEN), { treeId: 'other' }));
+  await check('share: super admin turns the link back on', true, () => updateDoc(doc(sup, 'shareLinks', TOKEN), { active: true }));
+  await check('share: link on again -> anonymous reads the guest view', true, () => getDoc(guestRef(an1)));
+  await check('share: regenerate deletes the old link and creates a new one', true, () => rotate(sup, 'uid-super', TOKEN2, TOKEN));
+  await check('share: after regenerate the old link stops working at once', false, () => getDoc(guestRef(an1)));
+  await check('share: after regenerate the old token cannot be claimed', false, () => claim(an3, 'uid-anon3', TOKEN));
+  await check('share: the new token can be claimed and read', true, async () => { await claim(an3, 'uid-anon3', TOKEN2); await getDoc(guestRef(an3)); });
+  await check('share: a Google user not on the lists, holding the link, reads the guest view', true, async () => { const g = gctx('uid-cousin', 'cousin@example.com'); await claim(g, 'uid-cousin', TOKEN2); await getDoc(guestRef(g)); });
+  await check('share: that Google user still cannot read the full tree', false, () => getDoc(ref(gctx('uid-cousin', 'cousin@example.com'))));
+  await check('share: a viewer on the lists reads the guest view without a link', true, () => getDoc(guestRef(vw)));
+
+  // Suggestions
+  const G = gctx('uid-g1', 'cousin@example.com'), G2 = gctx('uid-g2', 'other@example.com');
+  const sugg = (email, uid, extra = {}) => ({ ...buildSuggestion({ personId: 'p1', field: 'birthPlace', oldValue: '', newValue: 'Pune', note: 'From my aunt', email, uid }), createdAt: serverTimestamp(), ...extra });
+  await check('suggest: Google user creates a pending suggestion in their own name', true, () => setDoc(doc(G, 'suggestions', 's1'), sugg('cousin@example.com', 'uid-g1')));
+  await check('suggest: linked anonymous->Google user can create', true, () => setDoc(doc(linkedCtx('uid-l1', 'linked@example.com'), 'suggestions', 's-linked'), sugg('linked@example.com', 'uid-l1')));
+  await check('suggest: cannot use someone else\'s email', false, () => setDoc(doc(G, 'suggestions', 's2'), sugg('other@example.com', 'uid-g1')));
+  await check('suggest: cannot use someone else\'s uid', false, () => setDoc(doc(G, 'suggestions', 's3'), sugg('cousin@example.com', 'uid-g2')));
+  await check('suggest: cannot create as already approved', false, () => setDoc(doc(G, 'suggestions', 's4'), sugg('cousin@example.com', 'uid-g1', { status: 'approved' })));
+  await check('suggest: cannot add unknown fields', false, () => setDoc(doc(G, 'suggestions', 's5'), sugg('cousin@example.com', 'uid-g1', { role: 'admin' })));
+  await check('suggest: cannot backdate createdAt', false, () => setDoc(doc(G, 'suggestions', 's6'), sugg('cousin@example.com', 'uid-g1', { createdAt: Timestamp.fromMillis(0) })));
+  await check('suggest: unknown field name refused', false, () => setDoc(doc(G, 'suggestions', 's7'), sugg('cousin@example.com', 'uid-g1', { field: 'superAdminEmail' })));
+  await check('suggest: unverified Google email refused', false, () => setDoc(doc(gctx('uid-g3', 'unv@example.com', { verified: false }), 'suggestions', 's8'), sugg('unv@example.com', 'uid-g3')));
+  await check('suggest: non-Google (password) account refused', false, () => setDoc(doc(gctx('uid-g4', 'pw@example.com', { provider: 'password' }), 'suggestions', 's9'), sugg('pw@example.com', 'uid-g4')));
+  await check('suggest: signed-out refused', false, () => setDoc(doc(anon, 'suggestions', 's10'), sugg('x@example.com', 'x')));
+  await check('suggest: author can read their own', true, () => getDoc(doc(G, 'suggestions', 's1')));
+  await check('suggest: another Google user cannot read it', false, () => getDoc(doc(G2, 'suggestions', 's1')));
+  await check('suggest: a viewer cannot read it', false, () => getDoc(doc(vw, 'suggestions', 's1')));
+  await check('suggest: author cannot list suggestions', false, () => getDocs(collection(G, 'suggestions')));
+  await check('suggest: editor (not admin) cannot list suggestions', false, () => getDocs(collection(ed, 'suggestions')));
+  await check('suggest: author cannot edit their suggestion', false, () => updateDoc(doc(G, 'suggestions', 's1'), { newValue: 'Mumbai' }));
+  await check('suggest: author cannot approve their suggestion', false, () => updateDoc(doc(G, 'suggestions', 's1'), { status: 'approved', reviewedByEmail: 'cousin@example.com', reviewedByUid: 'uid-g1', reviewedAt: serverTimestamp() }));
+  await check('suggest: author cannot delete it', false, () => deleteDoc(doc(G, 'suggestions', 's1')));
+  await check('suggest: admin lists suggestions', true, () => getDocs(collection(adm, 'suggestions')));
+  await check('suggest: super admin lists suggestions', true, () => getDocs(collection(sup, 'suggestions')));
+  await check('suggest: editor cannot approve', false, () => updateDoc(doc(ed, 'suggestions', 's1'), { status: 'approved', reviewedByEmail: EDITOR, reviewedByUid: 'uid-ed', reviewedAt: serverTimestamp() }));
+  await check('suggest: admin cannot approve in someone else\'s name', false, () => updateDoc(doc(adm, 'suggestions', 's1'), { status: 'approved', reviewedByEmail: SUPER, reviewedByUid: 'uid-super', reviewedAt: serverTimestamp() }));
+  await check('suggest: admin cannot change the proposed value while approving', false, () => updateDoc(doc(adm, 'suggestions', 's1'), { status: 'approved', newValue: 'X', reviewedByEmail: ADMIN, reviewedByUid: 'uid-adm', reviewedAt: serverTimestamp() }));
+  await check('suggest: admin approves, stamped with their identity', true, () => updateDoc(doc(adm, 'suggestions', 's1'), { status: 'approved', reviewedByEmail: ADMIN, reviewedByUid: 'uid-adm', reviewedAt: serverTimestamp(), reviewNote: '' }));
+  await check('suggest: a reviewed suggestion cannot be re-reviewed', false, () => updateDoc(doc(sup, 'suggestions', 's1'), { status: 'rejected', reviewedByEmail: SUPER, reviewedByUid: 'uid-super', reviewedAt: serverTimestamp() }));
+  await check('suggest: super admin rejects another', true, () => updateDoc(doc(sup, 'suggestions', 's-linked'), { status: 'rejected', reviewedByEmail: SUPER, reviewedByUid: 'uid-super', reviewedAt: serverTimestamp() }));
+}
 
 await seed();
 // --- Super admin delete
